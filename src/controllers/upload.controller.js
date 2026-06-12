@@ -1,0 +1,24 @@
+// Upload controller — validates that an image file is present, then hands the
+// uploader's id, the file, and the body metadata to UploadService.
+const UploadService = require('../services/upload.service');
+
+// Build a 400 error carrying its own statusCode (surfaced by errorHandler).
+const bad = (message) => {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+};
+
+// POST /api/v1/uploads
+exports.createUpload = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return next(bad('An image file is required'));
+    }
+
+    const response = await UploadService.createUpload(req.user.id, req.file, req.body);
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};

@@ -1,0 +1,32 @@
+{
+  "port": 4000,
+  "mongoUri": "mongodb+srv://USER:PASS@cluster.mongodb.net/HalalWalls?retryWrites=true&w=majority",
+  "appUrl": "https://halalwalls.com",
+  "jwtSecret": "CHANGE_ME_set_via_JWT_SECRET_env_in_production",
+  "jwtExpiresIn": "7d",
+  "passwordResetExpiresMin": 60,
+
+  "googleClientId": "set-via-GOOGLE_CLIENT_ID-env",
+  "googleClientSecret": "set-via-GOOGLE_CLIENT_SECRET-env",
+  "googleRedirectUri": "https://halalwalls.com/api/v1/auth/google/callback",
+
+  "emailProvider": "smtp",
+  "emailFrom": "no-reply@halalwalls.com",
+  "emailFromName": "HalalWalls",
+
+  "smtpHost": "set-via-SMTP_HOST-env",
+  "smtpPort": 587,
+  "smtpSecure": false,
+  "smtpUser": "set-via-SMTP_USER-env",
+  "smtpPass": "set-via-SMTP_PASS-env",
+
+  "sendgridApiKey": "set-via-SENDGRID_API_KEY-env",
+  "sendgridResetTemplateId": "set-via-SENDGRID_RESET_TEMPLATE_ID-env",
+
+  "r2AccountId": "set-via-R2_ACCOUNT_ID-env",
+  "r2AccessKeyId": "set-via-R2_ACCESS_KEY_ID-env",
+  "r2SecretAccessKey": "set-via-R2_SECRET_ACCESS_KEY-env",
+  "r2Bucket": "set-via-R2_BUCKET-env",
+  "r2PublicBaseUrl": "https://media.halalwalls.com",
+  "r2Endpoint": ""
+}

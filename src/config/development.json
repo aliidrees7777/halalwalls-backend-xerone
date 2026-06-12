@@ -1,0 +1,32 @@
+{
+  "port": 3662,
+  "mongoUri": "mongodb+srv://USER:PASS@cluster.mongodb.net/HalalWalls?retryWrites=true&w=majority",
+  "appUrl": "http://localhost:3661",
+  "jwtSecret": "halalwalls-super-secret-jwt-key-change-this-in-production",
+  "jwtExpiresIn": "7d",
+  "passwordResetExpiresMin": 60,
+
+  "googleClientId": "1234567890-dummyclientidxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com",
+  "googleClientSecret": "GOCSPX-dummyClientSecretReplaceMe",
+  "googleRedirectUri": "http://localhost:3662/api/v1/auth/google/callback",
+
+  "emailProvider": "smtp",
+  "emailFrom": "no-reply@halalwalls.com",
+  "emailFromName": "HalalWalls",
+
+  "smtpHost": "smtp.yourprovider.com",
+  "smtpPort": 587,
+  "smtpSecure": false,
+  "smtpUser": "your-smtp-username",
+  "smtpPass": "your-smtp-password",
+
+  "sendgridApiKey": "SG.dummyApiKeyReplaceMe",
+  "sendgridResetTemplateId": "d-dummyResetTemplateId",
+
+  "r2AccountId": "your-cloudflare-account-id",
+  "r2AccessKeyId": "your-r2-access-key-id",
+  "r2SecretAccessKey": "your-r2-secret-access-key",
+  "r2Bucket": "your-r2-bucket-name",
+  "r2PublicBaseUrl": "https://your-media-domain.com",
+  "r2Endpoint": ""
+}
