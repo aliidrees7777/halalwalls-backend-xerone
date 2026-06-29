@@ -2,8 +2,8 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
 const config = require('config');
+const prisma = require('./lib/prisma');
 
 const { requestLogger, successHandler, errorHandler } = require('./helpers/response.helper');
 
@@ -29,11 +29,13 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // explicit preflight for all routes
 
-app.use(express.json());
+// 2 MB limit accommodates browser-compressed profile avatar/banner data URLs
+// (interim, until the Hostinger upload pipeline stores them as file URLs).
+app.use(express.json({ limit: '2mb' }));
 app.use(requestLogger);
 app.use(successHandler(SERVICE));
 
-// Serve uploaded wallpaper images (local storage fallback when R2 is off).
+// Serve uploaded wallpaper images from local disk (Hostinger VPS storage).
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // Background processes — gated off in test mode (the cron tick must not
@@ -42,10 +44,10 @@ if (process.env.NODE_ENV !== 'test') {
   require('./schedulers/token-cleanup.scheduler');
 }
 
-// ── Database ──
+// ── Database (Supabase Postgres via Prisma) ──
 async function connectDB() {
-  await mongoose.connect(process.env.MONGO_URI || config.get('mongoUri'));
-  console.log('✅ Database connected (HalalWalls)');
+  await prisma.$connect();
+  console.log('✅ Database connected (HalalWalls — Supabase Postgres)');
 }
 connectDB().catch((err) => console.error('❌ Database connection error:', err.message));
 

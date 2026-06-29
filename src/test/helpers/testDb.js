@@ -1,86 +1,181 @@
 /**
- * Self-contained test database harness.
+ * Self-contained test database harness — LOCAL Postgres only.
  *
- * Spins up an in-memory MongoDB (mongodb-memory-server) so the suite never
- * touches the real cluster, points the app at it via MONGO_URI, then requires
- * the Express app (which connects on require). Idempotent: safe to call from
- * the shared mocha setup once per run.
+ * Spins up a throwaway embedded PostgreSQL on localhost (via embedded-postgres),
+ * points the app at it through DATABASE_URL/DIRECT_URL, applies the Prisma schema
+ * with `prisma db push`, then requires the Express app. The real Supabase DB is
+ * NEVER touched (a safety check refuses any non-local DATABASE_URL).
+ *
+ * NOTE: PostgreSQL refuses to run its server under a Windows administrator token,
+ * so the suite must be launched from a NON-elevated shell (plain `npm test`).
  */
-const { MongoMemoryServer } = require('mongodb-memory-server');
-const mongoose = require('mongoose');
+const EmbeddedPostgresModule = require('embedded-postgres');
+const EmbeddedPostgres = EmbeddedPostgresModule.default || EmbeddedPostgresModule;
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const { execSync } = require('child_process');
 const bcrypt = require('bcryptjs');
 
-let mongod = null;
+const TEST_PORT = Number(process.env.TEST_PG_PORT) || 55432;
+const DB_NAME = 'halalwalls_test';
+const BACKEND_ROOT = path.join(__dirname, '..', '..', '..');
+
+let pg = null;
 let app = null;
+let prisma = null;
 
 exports.start = async () => {
   if (app) return app;
 
-  mongod = await MongoMemoryServer.create();
-  process.env.NODE_ENV = 'test';
-  process.env.MONGO_URI = mongod.getUri('HalalWalls-Test');
+  const dir = path.join(os.tmpdir(), 'halalwalls-pgtest');
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 
-  // Force external integrations OFF during tests so the suite is deterministic
-  // and never attempts a real Google verification, email send, or R2 upload —
-  // even if the developer has real credentials in their local .env. (dotenv
-  // won't override these once they're already set.)
+  pg = new EmbeddedPostgres({
+    databaseDir: dir,
+    user: 'postgres',
+    password: 'postgres',
+    port: TEST_PORT,
+    persistent: false,
+  });
+  await pg.initialise();
+  await pg.start();
+  await pg.createDatabase(DB_NAME);
+
+  const url = `postgresql://postgres:postgres@localhost:${TEST_PORT}/${DB_NAME}`;
+
+  process.env.NODE_ENV = 'test';
+  process.env.DATABASE_URL = url;
+  process.env.DIRECT_URL = url;
+
+  // SAFETY: never apply the schema to a remote/production database.
+  if (!/@localhost|@127\.0\.0\.1/.test(process.env.DATABASE_URL)) {
+    throw new Error('Refusing to run tests against a non-local DATABASE_URL');
+  }
+
+  // Force external integrations OFF so the suite is deterministic (no real
+  // Google verification, Resend, or SMTP send).
   process.env.GOOGLE_CLIENT_ID = '';
-  process.env.EMAIL_PROVIDER = '';
+  process.env.RESEND_API_KEY = '';
   process.env.SMTP_HOST = '';
   process.env.SMTP_USER = '';
-  process.env.SENDGRID_API_KEY = '';
-  process.env.R2_ACCOUNT_ID = '';
-  process.env.R2_ACCESS_KEY_ID = '';
-  process.env.R2_SECRET_ACCESS_KEY = '';
-  process.env.R2_BUCKET = '';
-  process.env.R2_PUBLIC_BASE_URL = '';
-  process.env.R2_ENDPOINT = '';
 
-  // Require AFTER MONGO_URI is set so the app connects to the in-memory DB.
+  // Apply the Prisma schema to the fresh local DB.
+  execSync('npx prisma db push --skip-generate --accept-data-loss', {
+    cwd: BACKEND_ROOT,
+    env: process.env,
+    stdio: 'pipe',
+  });
+
+  // Require AFTER env is set so the Prisma client targets the local DB.
   app = require('../../index');
-  await mongoose.connection.asPromise();
+  prisma = require('../../lib/prisma');
+  await prisma.$connect();
   return app;
 };
 
 exports.stop = async () => {
-  await mongoose.disconnect();
-  if (mongod) await mongod.stop();
-  mongod = null;
+  if (prisma) { try { await prisma.$disconnect(); } catch {} }
+  if (pg) { try { await pg.stop(); } catch {} }
+  pg = null;
   app = null;
+  prisma = null;
 };
 
+// Truncate every table between tests (FK-safe via CASCADE).
 exports.clear = async () => {
-  const collections = mongoose.connection.collections;
-  for (const name of Object.keys(collections)) {
-    await collections[name].deleteMany({});
-  }
+  await prisma.$executeRawUnsafe(
+    'TRUNCATE TABLE "hw_favorites","hw_wallpapers","hw_categories","hw_contacts","hw_users" RESTART IDENTITY CASCADE'
+  );
 };
 
 exports.app = () => app;
+exports.prisma = () => prisma;
 
-// Creates a user directly (bypassing the API) for login-related tests.
-exports.createUser = async ({
-  email,
-  password,
-  authProvider = 'local',
-  role = 'user',
-}) => {
-  const User = require('../../models/user.schema');
-  const hashed = password ? await bcrypt.hash(password, 10) : null;
-  return User.create({
-    firstName: 'Test',
-    lastName: 'User',
-    email: email.toLowerCase(),
-    password: hashed,
-    role,
-    authProvider,
+// ── Factories ──────────────────────────────────────────────────────────────
+const { signAccessToken } = require('../../helpers/jwt.helper');
+
+let seq = 0;
+const uniq = () => `${Date.now()}_${++seq}`;
+
+exports.createUser = async (overrides = {}) => {
+  const { password, ...rest } = overrides;
+  return prisma.user.create({
+    data: {
+      firstName: rest.firstName || 'Test',
+      lastName: rest.lastName || 'User',
+      email: (rest.email || `user_${uniq()}@test.com`).toLowerCase(),
+      password: password ? await bcrypt.hash(password, 10) : null,
+      role: rest.role || 'user',
+      authProvider: rest.authProvider || 'local',
+      emailVerified: rest.emailVerified !== undefined ? rest.emailVerified : true,
+      isPremium: rest.isPremium || false,
+    },
   });
 };
 
-// Reads a (normally select:false) token field straight from the DB.
-exports.getUserTokenField = async (email, field) => {
-  const User = require('../../models/user.schema');
-  const user = await User.findOne({ email: email.toLowerCase() }).select(`+${field}`);
-  // field like 'passwordReset.token'
-  return field.split('.').reduce((acc, k) => (acc ? acc[k] : undefined), user);
+// Create an admin (or user) and return { user, token }.
+exports.authUser = async (role = 'user', overrides = {}) => {
+  const user = await exports.createUser({ ...overrides, role });
+  return { user, token: signAccessToken(user) };
+};
+
+exports.tokenFor = (user) => signAccessToken(user);
+
+exports.createCategory = async (overrides = {}) => {
+  const n = uniq();
+  return prisma.category.create({
+    data: {
+      name: overrides.name || `Cat ${n}`,
+      slug: overrides.slug || `cat-${n}`,
+      description: overrides.description || '',
+      order: overrides.order || 0,
+      isPremium: overrides.isPremium || false,
+      image: overrides.image || null,
+      count: overrides.count || 0,
+    },
+  });
+};
+
+exports.createWallpaper = async (overrides = {}) => {
+  const n = uniq();
+  return prisma.wallpaper.create({
+    data: {
+      title: overrides.title || `Wallpaper ${n}`,
+      slug: overrides.slug || `wallpaper-${n}`,
+      description: overrides.description || '',
+      category: overrides.category || 'Space',
+      categorySlug: overrides.categorySlug || 'space',
+      tags: overrides.tags || ['test'],
+      image: overrides.image || 'https://cdn.test/w.jpg',
+      originalUrl: overrides.originalUrl || 'https://cdn.test/w.jpg',
+      thumbnailUrl: overrides.thumbnailUrl || 'https://cdn.test/w.jpg',
+      resolution: overrides.resolution || '1920x1080',
+      preferredResolution: overrides.preferredResolution || '1920x1080',
+      resolutions: overrides.resolutions || ['1920x1080'],
+      sizeMB: overrides.sizeMB || 1.42,
+      width: overrides.width || 1920,
+      height: overrides.height || 1080,
+      author: overrides.author || 'halalwalls',
+      isPremium: overrides.isPremium || false,
+      isLive: overrides.isLive || false,
+      status: overrides.status || 'active',
+      downloadCount: overrides.downloadCount || 0,
+      views: overrides.views || 0,
+      favoritesCount: overrides.favoritesCount || 0,
+      uploadedById: overrides.uploadedById || null,
+    },
+  });
+};
+
+exports.createContact = async (overrides = {}) => {
+  return prisma.contact.create({
+    data: {
+      name: overrides.name || 'Tester',
+      email: (overrides.email || `contact_${uniq()}@test.com`).toLowerCase(),
+      reason: overrides.reason || 'support',
+      message: overrides.message || 'Hello from a test',
+      status: overrides.status || 'new',
+    },
+  });
 };

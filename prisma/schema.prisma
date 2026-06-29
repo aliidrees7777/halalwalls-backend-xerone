@@ -1,0 +1,142 @@
+// HalalWalls — Postgres (Supabase) schema via Prisma.
+// Translated from the original Mongoose models. Table names keep the hw_ prefix.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // transaction pooler (app runtime)
+  directUrl = env("DIRECT_URL")   // session pooler (migrations)
+}
+
+enum Role {
+  user
+  admin
+}
+
+enum AuthProvider {
+  local
+  google
+}
+
+enum WallpaperStatus {
+  active
+  pending
+  hidden
+}
+
+enum ContactStatus {
+  new
+  read
+  resolved
+}
+
+model User {
+  id                       String       @id @default(uuid()) @db.Uuid
+  firstName                String
+  lastName                 String       @default("")
+  email                    String       @unique
+  password                 String? // hashed; null for Google-only accounts
+  role                     Role         @default(user)
+  authProvider             AuthProvider @default(local)
+  googleId                 String?
+  avatar                   String?
+  emailVerified            Boolean      @default(false)
+  emailVerificationToken   String?
+  emailVerificationExpires DateTime?
+  bio                      String       @default("")
+  banner                   String?
+  isPremium                Boolean      @default(false)
+  passwordResetToken       String?
+  passwordResetExpires     DateTime?
+  sessionsValidFrom        DateTime?
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
+
+  favorites        Favorite[]
+  uploadedWallpapers Wallpaper[] @relation("UploadedBy")
+
+  @@map("hw_users")
+}
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  description String   @default("")
+  image       String?
+  order       Int      @default(0)
+  isPremium   Boolean  @default(false)
+  count       Int      @default(0) // cached; live count computed in the API
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("hw_categories")
+}
+
+model Wallpaper {
+  id                  String          @id @default(uuid()) @db.Uuid
+  title               String
+  slug                String          @unique
+  description         String          @default("")
+  category            String? // display label (e.g. "Anime")
+  categorySlug        String? // filter slug (e.g. "anime")
+  tags                String[]        @default([])
+  image               String?
+  originalUrl         String?
+  thumbnailUrl        String?
+  resolution          String          @default("") // native, e.g. "1920x1080"
+  preferredResolution String          @default("")
+  resolutions         String[]        @default([])
+  sizeMB              Float           @default(0)
+  width               Int?
+  height              Int?
+  author              String          @default("HalalWalls")
+  isPremium           Boolean         @default(false)
+  isLive              Boolean         @default(false)
+  status              WallpaperStatus @default(active)
+  downloadCount       Int             @default(0)
+  views               Int             @default(0)
+  favoritesCount      Int             @default(0)
+  uploadedById        String?         @db.Uuid
+  uploadedBy          User?           @relation("UploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  favorites Favorite[]
+
+  @@index([categorySlug, status])
+  @@index([status, createdAt])
+  @@index([status, downloadCount])
+  @@index([resolution])
+  @@map("hw_wallpapers")
+}
+
+// Join table for the user↔wallpaper many-to-many favorites
+// (replaces the favorites array on the Mongo User).
+model Favorite {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  wallpaperId String    @db.Uuid
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallpaper   Wallpaper @relation(fields: [wallpaperId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, wallpaperId])
+  @@index([userId])
+  @@map("hw_favorites")
+}
+
+model Contact {
+  id        String        @id @default(uuid()) @db.Uuid
+  name      String?
+  email     String?
+  reason    String?
+  message   String
+  status    ContactStatus @default(new)
+  createdAt DateTime      @default(now())
+
+  @@map("hw_contacts")
+}

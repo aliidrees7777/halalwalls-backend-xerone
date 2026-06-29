@@ -2,8 +2,7 @@
 // filters latest/popular/random/live). Public reads expose categories with a
 // LIVE count of active wallpapers per category; create/update/delete are
 // operator (admin) actions so the upload form has real categories to pick from.
-const Category = require('../models/category.schema');
-const Wallpaper = require('../models/wallpaper.schema');
+const prisma = require('../lib/prisma');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
@@ -15,7 +14,7 @@ const slugify = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 const serialize = (c, count) => ({
-  id: String(c._id),
+  id: String(c.id),
   name: c.name,
   slug: c.slug,
   description: c.description || '',
@@ -27,17 +26,21 @@ const serialize = (c, count) => ({
 
 // Map of categorySlug -> active wallpaper count.
 const liveCounts = async () => {
-  const rows = await Wallpaper.aggregate([
-    { $match: { status: 'active' } },
-    { $group: { _id: '$categorySlug', n: { $sum: 1 } } },
-  ]);
-  return rows.reduce((m, r) => ((m[r._id] = r.n), m), {});
+  const rows = await prisma.wallpaper.groupBy({
+    by: ['categorySlug'],
+    where: { status: 'active' },
+    _count: { _all: true },
+  });
+  return rows.reduce((m, r) => {
+    if (r.categorySlug) m[r.categorySlug] = r._count._all;
+    return m;
+  }, {});
 };
 
 // ── GET /categories — all categories with live wallpaper counts ──────────
 exports.listAll = async () => {
   const [cats, counts] = await Promise.all([
-    Category.find().sort({ order: 1, name: 1 }).lean(),
+    prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }] }),
     liveCounts(),
   ]);
   return {
@@ -49,9 +52,9 @@ exports.listAll = async () => {
 
 // ── GET /categories/:slug — one category + its live count ────────────────
 exports.getBySlug = async (slug) => {
-  const cat = await Category.findOne({ slug }).lean();
+  const cat = await prisma.category.findUnique({ where: { slug } });
   if (!cat) throw fail('Category not found', 404);
-  const count = await Wallpaper.countDocuments({ status: 'active', categorySlug: slug });
+  const count = await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
   return { message: 'Category fetched', data: { category: serialize(cat, count) }, statusCode: 200 };
 };
 
@@ -62,15 +65,19 @@ exports.create = async (body = {}) => {
 
   const slug = slugify(body.slug || name);
   if (!slug) throw fail('Could not derive a valid slug from the name', 400);
-  if (await Category.exists({ slug })) throw fail('A category with this slug already exists', 409);
+  if (await prisma.category.findUnique({ where: { slug } })) {
+    throw fail('A category with this slug already exists', 409);
+  }
 
-  const cat = await Category.create({
-    name: String(name).trim(),
-    slug,
-    description: description ? String(description).trim() : '',
-    image: image || null,
-    order: Number.isFinite(+order) ? +order : 0,
-    isPremium: !!isPremium,
+  const cat = await prisma.category.create({
+    data: {
+      name: String(name).trim(),
+      slug,
+      description: description ? String(description).trim() : '',
+      image: image || null,
+      order: Number.isFinite(+order) ? +order : 0,
+      isPremium: !!isPremium,
+    },
   });
   return { message: 'Category created', data: { category: serialize(cat, 0) }, statusCode: 201 };
 };
@@ -86,19 +93,27 @@ exports.update = async (slug, body = {}) => {
     }
   });
   if (Object.keys(update).length === 0) throw fail('No valid fields to update', 400);
-  update.updatedAt = Date.now();
 
-  const cat = await Category.findOneAndUpdate({ slug }, { $set: update }, { new: true, runValidators: true }).lean();
-  if (!cat) throw fail('Category not found', 404);
-  const count = await Wallpaper.countDocuments({ status: 'active', categorySlug: slug });
+  let cat;
+  try {
+    cat = await prisma.category.update({ where: { slug }, data: update });
+  } catch (err) {
+    if (err.code === 'P2025') throw fail('Category not found', 404);
+    throw err;
+  }
+  const count = await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
   return { message: 'Category updated', data: { category: serialize(cat, count) }, statusCode: 200 };
 };
 
 // ── DELETE /categories/:slug — remove (admin) ────────────────────────────
 exports.remove = async (slug) => {
-  const cat = await Category.findOneAndDelete({ slug }).lean();
-  if (!cat) throw fail('Category not found', 404);
-  const orphaned = await Wallpaper.countDocuments({ categorySlug: slug });
+  try {
+    await prisma.category.delete({ where: { slug } });
+  } catch (err) {
+    if (err.code === 'P2025') throw fail('Category not found', 404);
+    throw err;
+  }
+  const orphaned = await prisma.wallpaper.count({ where: { categorySlug: slug } });
   return {
     message: 'Category deleted',
     data: { slug, orphanedWallpapers: orphaned },

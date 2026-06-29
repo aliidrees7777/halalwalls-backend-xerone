@@ -11,7 +11,7 @@
  *         router.post('/x', authorize(['admin']), controller.x)
  */
 const { verifyToken } = require('../helpers/jwt.helper');
-const User = require('../models/user.schema');
+const prisma = require('../lib/prisma');
 
 const authorize = (allowedRoles = []) => async (req, res, next) => {
   try {
@@ -33,7 +33,7 @@ const authorize = (allowedRoles = []) => async (req, res, next) => {
       return next(error);
     }
 
-    const user = await User.findById(decoded.id);
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!user) {
       const error = new Error('User no longer exists');
       error.statusCode = 401;
@@ -55,6 +55,11 @@ const authorize = (allowedRoles = []) => async (req, res, next) => {
       error.statusCode = 403;
       return next(error);
     }
+
+    // Don't carry secrets on req.user.
+    delete user.password;
+    delete user.emailVerificationToken;
+    delete user.passwordResetToken;
 
     req.user = user;
     next();

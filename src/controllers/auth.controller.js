@@ -91,6 +91,29 @@ exports.google = async (req, res, next) => {
   }
 };
 
+// POST /api/v1/auth/verify-email
+exports.verifyEmail = async (req, res, next) => {
+  const { token } = req.body || {};
+  try {
+    if (!token || typeof token !== 'string') return bad(next, 'Verification token is required');
+
+    const response = await AuthService.verifyEmail({ token: token.trim() });
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /api/v1/auth/resend-verification  (authenticated)
+exports.resendVerification = async (req, res, next) => {
+  try {
+    const response = await AuthService.resendVerification(req.user.id);
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // POST /api/v1/auth/change-password   (authenticated, any role)
 exports.changePassword = async (req, res, next) => {
   const { currentPassword, newPassword, confirmNewPassword } = req.body || {};

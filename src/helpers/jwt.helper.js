@@ -9,11 +9,11 @@ const getExpiry = () =>
 
 // Sign a short-lived access token. Payload carries the minimum needed to
 // identify the user + their role on subsequent requests.
-exports.signAccessToken = (user) =>
-  jwt.sign(
-    { id: user._id.toString(), email: user.email, role: user.role },
-    getSecret(),
-    { expiresIn: getExpiry() }
-  );
+exports.signAccessToken = (user) => {
+  const id = user.id || (user._id && user._id.toString());
+  return jwt.sign({ id, email: user.email, role: user.role }, getSecret(), {
+    expiresIn: getExpiry(),
+  });
+};
 
 exports.verifyToken = (token) => jwt.verify(token, getSecret());

@@ -1,15 +1,15 @@
 /**
- * User service — the signed-in user's favorite wallpapers.
+ * User service — the signed-in user's profile + favorite wallpapers.
  *
  * Auth-only: the controller passes req.user.id (a valid token is required by
- * the route's authorize() guard). Favorites are stored as an array of Wallpaper
- * ids on the user, and EACH wallpaper keeps a `favoritesCount` that is kept in
- * sync — incremented when a user adds it, decremented when removed. Adds/removes
- * are idempotent (favoriting twice does not double-count).
+ * the route's authorize() guard). Favorites live in the hw_favorites join table
+ * (one row per user↔wallpaper). EACH wallpaper also keeps a denormalized
+ * `favoritesCount` kept in sync — incremented when a user adds it, decremented
+ * when removed. Adds/removes are idempotent (the table's unique constraint on
+ * (userId, wallpaperId) means favoriting twice never double-counts).
  */
-const mongoose = require('mongoose');
-const User = require('../models/user.schema');
-const Wallpaper = require('../models/wallpaper.schema');
+const prisma = require('../lib/prisma');
+const { serializeUser } = require('../helpers/serialize');
 const { serializeCard } = require('./wallpaper.service');
 
 const fail = (message, statusCode) => {
@@ -18,25 +18,32 @@ const fail = (message, statusCode) => {
   return error;
 };
 
+// UUID v4-ish check so a malformed id returns a clean 400 instead of a DB error.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const assertValidId = (id) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw fail('Invalid wallpaper id', 400);
+  if (!UUID_RE.test(String(id))) throw fail('Invalid wallpaper id', 400);
 };
 
-const favoriteIds = (user) => (user.favorites || []).map((f) => String(f));
+// Ordered (oldest-first) list of the user's favorite wallpaper ids.
+async function favoriteWallpaperIds(userId) {
+  const rows = await prisma.favorite.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'asc' },
+    select: { wallpaperId: true },
+  });
+  return rows.map((r) => r.wallpaperId);
+}
 
 // ── GET /me/favorites — the user's favorited wallpapers (active only) ──────
 exports.listFavorites = async (userId) => {
-  const user = await User.findById(userId).select('favorites');
-  if (!user) throw fail('User not found', 404);
+  const favs = await prisma.favorite.findMany({
+    where: { userId, wallpaper: { status: 'active' } },
+    orderBy: { createdAt: 'asc' }, // preserve favorite order (most-recent last)
+    include: { wallpaper: true },
+  });
 
-  const ids = user.favorites || [];
-  const docs = await Wallpaper.find({ _id: { $in: ids }, status: 'active' }).lean();
-
-  // Preserve the user's favorite order (most-recent additions last).
-  const order = new Map(ids.map((id, i) => [String(id), i]));
-  docs.sort((a, b) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0));
-
-  const favSet = new Set(ids.map(String));
+  const docs = favs.map((f) => f.wallpaper);
+  const favSet = new Set(docs.map((d) => String(d.id)));
   return {
     message: 'Favorites fetched',
     data: { wallpapers: docs.map((d) => serializeCard(d, favSet)), count: docs.length },
@@ -48,29 +55,35 @@ exports.listFavorites = async (userId) => {
 exports.addFavorite = async (userId, wallpaperId) => {
   assertValidId(wallpaperId);
 
-  const wp = await Wallpaper.findOne({ _id: wallpaperId, status: 'active' }).select('_id favoritesCount');
+  const wp = await prisma.wallpaper.findFirst({
+    where: { id: wallpaperId, status: 'active' },
+    select: { id: true, favoritesCount: true },
+  });
   if (!wp) throw fail('Wallpaper not found', 404);
 
-  // $addToSet → only adds if not already present; modifiedCount tells us if new.
-  const upd = await User.updateOne({ _id: userId }, { $addToSet: { favorites: wp._id } });
-  if (upd.matchedCount === 0) throw fail('User not found', 404);
+  // Idempotent add: create only if the (userId, wallpaperId) pair is new.
+  const existing = await prisma.favorite.findUnique({
+    where: { userId_wallpaperId: { userId, wallpaperId } },
+  });
 
   let favoritesCount = wp.favoritesCount || 0;
-  if (upd.modifiedCount === 1) {
-    const updated = await Wallpaper.findByIdAndUpdate(
-      wp._id,
-      { $inc: { favoritesCount: 1 } },
-      { new: true }
-    ).select('favoritesCount');
+  let added = false;
+  if (!existing) {
+    await prisma.favorite.create({ data: { userId, wallpaperId } });
+    const updated = await prisma.wallpaper.update({
+      where: { id: wallpaperId },
+      data: { favoritesCount: { increment: 1 } },
+      select: { favoritesCount: true },
+    });
     favoritesCount = updated.favoritesCount;
+    added = true;
   }
 
-  const user = await User.findById(userId).select('favorites');
   return {
-    message: upd.modifiedCount === 1 ? 'Added to favorites' : 'Already in favorites',
+    message: added ? 'Added to favorites' : 'Already in favorites',
     data: {
-      favorites: favoriteIds(user),
-      wallpaperId: String(wp._id),
+      favorites: await favoriteWallpaperIds(userId),
+      wallpaperId: String(wallpaperId),
       isFavorite: true,
       favoritesCount,
     },
@@ -82,32 +95,33 @@ exports.addFavorite = async (userId, wallpaperId) => {
 exports.removeFavorite = async (userId, wallpaperId) => {
   assertValidId(wallpaperId);
 
-  const upd = await User.updateOne({ _id: userId }, { $pull: { favorites: wallpaperId } });
-  if (upd.matchedCount === 0) throw fail('User not found', 404);
+  const del = await prisma.favorite.deleteMany({ where: { userId, wallpaperId } });
 
   let favoritesCount = null;
-  if (upd.modifiedCount === 1) {
-    const updated = await Wallpaper.findByIdAndUpdate(
-      wallpaperId,
-      { $inc: { favoritesCount: -1 } },
-      { new: true }
-    ).select('favoritesCount');
-    if (updated) {
-      // Guard against drifting below zero.
-      if (updated.favoritesCount < 0) {
-        await Wallpaper.updateOne({ _id: wallpaperId }, { $set: { favoritesCount: 0 } });
+  if (del.count === 1) {
+    // Decrement only if the wallpaper still exists; guard against drifting < 0.
+    const dec = await prisma.wallpaper.updateMany({
+      where: { id: wallpaperId },
+      data: { favoritesCount: { decrement: 1 } },
+    });
+    if (dec.count === 1) {
+      const wp = await prisma.wallpaper.findUnique({
+        where: { id: wallpaperId },
+        select: { favoritesCount: true },
+      });
+      if (wp && wp.favoritesCount < 0) {
+        await prisma.wallpaper.update({ where: { id: wallpaperId }, data: { favoritesCount: 0 } });
         favoritesCount = 0;
-      } else {
-        favoritesCount = updated.favoritesCount;
+      } else if (wp) {
+        favoritesCount = wp.favoritesCount;
       }
     }
   }
 
-  const user = await User.findById(userId).select('favorites');
   return {
-    message: upd.modifiedCount === 1 ? 'Removed from favorites' : 'Was not in favorites',
+    message: del.count === 1 ? 'Removed from favorites' : 'Was not in favorites',
     data: {
-      favorites: favoriteIds(user),
+      favorites: await favoriteWallpaperIds(userId),
       wallpaperId: String(wallpaperId),
       isFavorite: false,
       favoritesCount,
@@ -118,15 +132,18 @@ exports.removeFavorite = async (userId, wallpaperId) => {
 
 // ── GET /me — profile + favorites/uploads counts ─────────────────────────
 exports.getMe = async (userId) => {
-  const user = await User.findById(userId);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { favorites: { select: { wallpaperId: true } } },
+  });
   if (!user) throw fail('User not found', 404);
 
-  const uploadsCount = await Wallpaper.countDocuments({ uploadedBy: userId });
+  const uploadsCount = await prisma.wallpaper.count({ where: { uploadedById: userId } });
   return {
     message: 'Profile fetched',
     data: {
-      user: user.toPublicJSON(),
-      favoritesCount: (user.favorites || []).length,
+      user: serializeUser(user),
+      favoritesCount: user.favorites.length,
       uploadsCount,
     },
     statusCode: 200,
@@ -159,16 +176,27 @@ exports.updateMe = async (userId, body = {}) => {
     throw fail('No valid fields to update (allowed: firstName, lastName, name, bio, avatar, banner)', 400);
   }
 
-  update.updatedAt = Date.now();
-  const user = await User.findByIdAndUpdate(userId, { $set: update }, { new: true, runValidators: true });
-  if (!user) throw fail('User not found', 404);
+  let user;
+  try {
+    user = await prisma.user.update({
+      where: { id: userId },
+      data: update,
+      include: { favorites: { select: { wallpaperId: true } } },
+    });
+  } catch (err) {
+    if (err.code === 'P2025') throw fail('User not found', 404);
+    throw err;
+  }
 
-  return { message: 'Profile updated', data: { user: user.toPublicJSON() }, statusCode: 200 };
+  return { message: 'Profile updated', data: { user: serializeUser(user) }, statusCode: 200 };
 };
 
 // ── GET /me/uploads — wallpapers this user uploaded (all statuses) ────────
 exports.listUploads = async (userId) => {
-  const docs = await Wallpaper.find({ uploadedBy: userId }).sort({ createdAt: -1 }).lean();
+  const docs = await prisma.wallpaper.findMany({
+    where: { uploadedById: userId },
+    orderBy: { createdAt: 'desc' },
+  });
   // The owner sees their own uploads regardless of status (incl. pending),
   // so each card carries its moderation status.
   const wallpapers = docs.map((d) => ({ ...serializeCard(d), status: d.status }));

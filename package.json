@@ -7,19 +7,21 @@
     "dev": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true nodemon src/index.js",
     "start": "cross-env NODE_ENV=production NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/index.js",
     "seed": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/seed/seed.js",
-    "test": "cross-env NODE_ENV=test NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true mocha --file src/test/setup.js src/test/**/*.test.js --timeout 120000 --exit"
+    "seed:users": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/seed/seed-users.js",
+    "test": "cross-env NODE_ENV=test NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true mocha --file src/test/setup.js \"src/test/**/*.test.js\" --timeout 120000 --exit"
   },
   "keywords": [
     "halalwalls",
     "wallpapers",
     "express",
-    "mongodb"
+    "postgresql",
+    "supabase",
+    "prisma"
   ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1052.0",
-    "@sendgrid/mail": "^8.1.3",
+    "@prisma/client": "6.19.3",
     "axios": "^1.7.4",
     "bcryptjs": "^2.4.3",
     "config": "^3.3.12",
@@ -29,18 +31,19 @@
     "google-auth-library": "^9.14.1",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.5.1",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.14",
+    "prisma": "6.19.3",
+    "resend": "^6.16.0",
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "chai": "^4.4.1",
     "chai-http": "^4.4.0",
     "cross-env": "^7.0.3",
+    "embedded-postgres": "^18.4.0-beta.17",
     "mocha": "^10.6.0",
-    "mongodb-memory-server": "^9.4.0",
     "nodemon": "^3.1.4"
   }
 }

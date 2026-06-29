@@ -2,17 +2,28 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const config = require('config');
 
-const User = require('../models/user.schema');
+const prisma = require('../lib/prisma');
 const { ROLES } = require('../helpers/roles');
+const { serializeUser } = require('../helpers/serialize');
 const { signAccessToken } = require('../helpers/jwt.helper');
 const { verifyGoogleIdToken } = require('../helpers/google.helper');
-const { sendPasswordResetEmail } = require('../helpers/email.helper');
+const { sendPasswordResetEmail, sendVerificationEmail } = require('../helpers/email.helper');
 
 const SALT_ROUNDS = 10;
+
+// Load the user's favorite wallpaper ids alongside the row so serializeUser can
+// echo them back (parity with the old embedded `favorites` array).
+const WITH_FAVORITES = { favorites: { select: { wallpaperId: true } } };
 
 const resetTtlMs = () => {
   const min = process.env.PASSWORD_RESET_EXPIRES_MIN ||
     (config.has('passwordResetExpiresMin') ? config.get('passwordResetExpiresMin') : 60);
+  return Number(min) * 60 * 1000;
+};
+
+const verifyTtlMs = () => {
+  const min = process.env.EMAIL_VERIFICATION_EXPIRES_MIN ||
+    (config.has('emailVerificationExpiresMin') ? config.get('emailVerificationExpiresMin') : 1440);
   return Number(min) * 60 * 1000;
 };
 
@@ -27,32 +38,83 @@ const fail = (message, statusCode) => {
 // ─── Signup ─────────────────────────────────────────────────────────────
 // role: 'user' (default) | 'admin'. Public signup is restricted to 'user' by
 // the controller; admins are provisioned internally.
-// No email verification — the account is created and a JWT is issued
-// immediately so the user is signed in right after registering.
+// The account is created and a JWT is issued immediately (so the user is signed
+// in), but the email starts UNVERIFIED and a verification link is emailed. The
+// frontend can prompt the user to verify; verified status gates nothing yet.
 exports.signup = async ({ firstName, lastName, email, password, role = ROLES.USER }) => {
   const normalizedEmail = email.toLowerCase().trim();
 
-  const existing = await User.findOne({ email: normalizedEmail });
+  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
   if (existing) throw fail('An account with this email already exists', 409);
 
   const hashed = await bcrypt.hash(password, SALT_ROUNDS);
+  const verifyToken = newToken();
 
-  const user = await User.create({
-    firstName: firstName.trim(),
-    lastName: (lastName || '').trim(),
-    email: normalizedEmail,
-    password: hashed,
-    role,
-    authProvider: 'local',
+  const user = await prisma.user.create({
+    data: {
+      firstName: firstName.trim(),
+      lastName: (lastName || '').trim(),
+      email: normalizedEmail,
+      password: hashed,
+      role,
+      authProvider: 'local',
+      emailVerified: false,
+      emailVerificationToken: verifyToken,
+      emailVerificationExpires: new Date(Date.now() + verifyTtlMs()),
+    },
   });
+
+  // Send the verification link (console-stub until SMTP is configured).
+  await sendVerificationEmail(normalizedEmail, verifyToken, user.firstName);
 
   const token = signAccessToken(user);
 
   return {
-    message: 'Account created successfully.',
-    data: { token, user: user.toPublicJSON() },
+    message: 'Account created. Please check your email to verify your address.',
+    data: { token, user: serializeUser(user) },
     statusCode: 201,
   };
+};
+
+// ─── Verify email ───────────────────────────────────────────────────────
+exports.verifyEmail = async ({ token }) => {
+  const user = await prisma.user.findFirst({ where: { emailVerificationToken: token } });
+  if (!user) throw fail('Invalid or already-used verification link', 400);
+
+  if (user.emailVerified) {
+    return { message: 'Email already verified. You can sign in.', data: null, statusCode: 200 };
+  }
+  if (!user.emailVerificationExpires || user.emailVerificationExpires < new Date()) {
+    throw fail('Verification link has expired. Please request a new one.', 410);
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { emailVerified: true, emailVerificationToken: null, emailVerificationExpires: null },
+  });
+
+  return { message: 'Email verified successfully.', data: { user: serializeUser(updated) }, statusCode: 200 };
+};
+
+// ─── Resend verification (authenticated) ────────────────────────────────
+exports.resendVerification = async (userId) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw fail('User not found', 404);
+  if (user.emailVerified) {
+    return { message: 'Your email is already verified.', data: null, statusCode: 200 };
+  }
+
+  const verifyToken = newToken();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      emailVerificationToken: verifyToken,
+      emailVerificationExpires: new Date(Date.now() + verifyTtlMs()),
+    },
+  });
+  await sendVerificationEmail(user.email, verifyToken, user.firstName);
+
+  return { message: 'Verification email sent. Please check your inbox.', data: null, statusCode: 200 };
 };
 
 // ─── Login (local) ──────────────────────────────────────────────────────
@@ -60,7 +122,10 @@ exports.signup = async ({ firstName, lastName, email, password, role = ROLES.USE
 exports.login = async ({ email, password, role }) => {
   const normalizedEmail = email.toLowerCase().trim();
 
-  const user = await User.findOne({ email: normalizedEmail }).select('+password');
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    include: WITH_FAVORITES,
+  });
   if (!user) throw fail('Invalid email or password', 401);
 
   if (user.authProvider === 'google' && !user.password) {
@@ -78,7 +143,7 @@ exports.login = async ({ email, password, role }) => {
   const token = signAccessToken(user);
   return {
     message: 'Logged in successfully',
-    data: { token, user: user.toPublicJSON() },
+    data: { token, user: serializeUser(user) },
     statusCode: 200,
   };
 };
@@ -87,12 +152,14 @@ exports.login = async ({ email, password, role }) => {
 // Generic success regardless of account existence (no user enumeration).
 exports.forgotPassword = async ({ email }) => {
   const normalizedEmail = email.toLowerCase().trim();
-  const user = await User.findOne({ email: normalizedEmail });
+  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
   if (user && user.authProvider === 'local') {
     const token = newToken();
-    user.passwordReset = { token, expiresAt: new Date(Date.now() + resetTtlMs()) };
-    await user.save();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: token, passwordResetExpires: new Date(Date.now() + resetTtlMs()) },
+    });
     await sendPasswordResetEmail(normalizedEmail, token, user.firstName);
   }
 
@@ -105,18 +172,21 @@ exports.forgotPassword = async ({ email }) => {
 
 // ─── Reset password ───────────────────────────────────────────────────────
 exports.resetPassword = async ({ token, newPassword }) => {
-  const user = await User.findOne({ 'passwordReset.token': token }).select(
-    '+passwordReset.token +passwordReset.expiresAt'
-  );
+  const user = await prisma.user.findFirst({ where: { passwordResetToken: token } });
   if (!user) throw fail('Invalid or already-used reset token', 400);
 
-  if (!user.passwordReset.expiresAt || user.passwordReset.expiresAt < new Date()) {
+  if (!user.passwordResetExpires || user.passwordResetExpires < new Date()) {
     throw fail('Reset token has expired. Please request a new one.', 410);
   }
 
-  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  user.passwordReset = { token: null, expiresAt: null };
-  await user.save();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: await bcrypt.hash(newPassword, SALT_ROUNDS),
+      passwordResetToken: null,
+      passwordResetExpires: null,
+    },
+  });
 
   return { message: 'Password has been reset successfully. You can now log in.', data: null, statusCode: 200 };
 };
@@ -125,31 +195,47 @@ exports.resetPassword = async ({ token, newPassword }) => {
 exports.googleAuth = async ({ idToken }) => {
   const profile = await verifyGoogleIdToken(idToken);
 
-  let user = await User.findOne({ email: profile.email });
+  let user = await prisma.user.findUnique({
+    where: { email: profile.email },
+    include: WITH_FAVORITES,
+  });
 
   if (!user) {
-    // First-time Google user → create a standard user account.
-    user = await User.create({
-      firstName: profile.firstName,
-      lastName: profile.lastName,
-      email: profile.email,
-      role: ROLES.USER,
-      authProvider: 'google',
-      googleId: profile.googleId,
-      avatar: profile.avatar,
+    // First-time Google user → create a standard user account. Google has
+    // already verified the email, so it's verified immediately.
+    user = await prisma.user.create({
+      data: {
+        firstName: profile.firstName,
+        lastName: profile.lastName || '',
+        email: profile.email,
+        role: ROLES.USER,
+        authProvider: 'google',
+        googleId: profile.googleId,
+        avatar: profile.avatar,
+        emailVerified: !!profile.emailVerified,
+      },
+      include: WITH_FAVORITES,
     });
   } else {
-    // Existing local account logging in with Google → link the Google id.
-    let changed = false;
-    if (!user.googleId) { user.googleId = profile.googleId; changed = true; }
-    if (!user.avatar && profile.avatar) { user.avatar = profile.avatar; changed = true; }
-    if (changed) await user.save();
+    // Existing local account logging in with Google → link the Google id and
+    // mark verified (Google confirmed ownership of the address).
+    const patch = {};
+    if (!user.googleId) patch.googleId = profile.googleId;
+    if (!user.avatar && profile.avatar) patch.avatar = profile.avatar;
+    if (!user.emailVerified && profile.emailVerified) patch.emailVerified = true;
+    if (Object.keys(patch).length > 0) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: patch,
+        include: WITH_FAVORITES,
+      });
+    }
   }
 
   const token = signAccessToken(user);
   return {
     message: 'Signed in with Google successfully',
-    data: { token, user: user.toPublicJSON() },
+    data: { token, user: serializeUser(user) },
     statusCode: 200,
   };
 };
@@ -159,7 +245,7 @@ exports.googleAuth = async ({ idToken }) => {
 // POST /api/v1/auth/change-password — authenticated; keeps THIS session,
 // logs out other devices (via sessionsValidFrom) and returns a fresh token.
 exports.changePassword = async (userId, { currentPassword, newPassword }) => {
-  const user = await User.findById(userId).select('+password');
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw fail('User not found', 404);
   if (user.authProvider === 'google' && !user.password) {
     throw fail('This account uses Google sign-in; a password cannot be changed here', 409);
@@ -168,10 +254,14 @@ exports.changePassword = async (userId, { currentPassword, newPassword }) => {
   const match = await bcrypt.compare(currentPassword, user.password || '');
   if (!match) throw fail('Current password is incorrect', 401);
 
-  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  user.sessionsValidFrom = new Date(); // invalidate other devices
-  await user.save();
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: await bcrypt.hash(newPassword, SALT_ROUNDS),
+      sessionsValidFrom: new Date(), // invalidate other devices
+    },
+  });
 
-  const token = signAccessToken(user); // fresh token for the current device
+  const token = signAccessToken(updated); // fresh token for the current device
   return { message: 'Password changed successfully', data: { token }, statusCode: 200 };
 };

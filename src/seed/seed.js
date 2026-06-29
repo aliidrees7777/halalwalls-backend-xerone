@@ -1,20 +1,16 @@
 /**
- * Seed script — populates HalalWalls with browsable demo data so the public
- * wallpaper APIs return real results from MongoDB.
+ * Seed script — populates HalalWalls (Supabase Postgres) with browsable demo
+ * data so the public wallpaper APIs return real results.
  *
  * Run:  npm run seed
- * Collections: hw_categories, hw_wallpapers.
+ * Tables: hw_categories, hw_wallpapers.
  *
  * Covers every category slug + browse mode the frontend uses:
  *   categories: islamic, anime, superheroes, minimalist, gaming, movies, cars, sport, space
  *   browse:     latest (createdAt), popular (downloadCount), random, live (isLive)
  */
 require('dotenv').config();
-const mongoose = require('mongoose');
-const config = require('config');
-
-const Category = require('../models/category.schema');
-const Wallpaper = require('../models/wallpaper.schema');
+const prisma = require('../lib/prisma');
 
 // ── categories (slugs match the frontend FilterId union) ──
 const CATEGORIES = [
@@ -72,14 +68,14 @@ const slugify = (s) =>
 const sizeFor = (w, h) => Math.round(((w * h) / (1920 * 1080)) * 1.42 * 100) / 100;
 
 async function seed() {
-  await mongoose.connect(process.env.MONGO_URI || config.get('mongoUri'));
-  console.log('✅ Connected to HalalWalls DB');
+  await prisma.$connect();
+  console.log('✅ Connected to HalalWalls DB (Supabase Postgres)');
 
   const labelBySlug = Object.fromEntries(CATEGORIES.map((c) => [c.slug, c.name]));
   const now = Date.now();
 
-  // ── wallpapers ──
-  await Wallpaper.deleteMany({});
+  // ── wallpapers ── (deleting wallpapers cascades to hw_favorites) ──
+  await prisma.wallpaper.deleteMany();
   const docs = RAW.map((row, i) => {
     const [title, categorySlug, resolution, image, tags = [], flags = {}] = row;
     const [width, height] = resolution.split('x').map(Number);
@@ -108,11 +104,11 @@ async function seed() {
       createdAt: new Date(now - i * 36 * 60 * 60 * 1000), // stagger for "latest"
     };
   });
-  const inserted = await Wallpaper.insertMany(docs);
-  console.log(`🖼️  Seeded ${inserted.length} wallpapers`);
+  const inserted = await prisma.wallpaper.createMany({ data: docs });
+  console.log(`🖼️  Seeded ${inserted.count} wallpapers`);
 
-  // ── categories (with live counts) ──
-  await Category.deleteMany({});
+  // ── categories (with cached counts) ──
+  await prisma.category.deleteMany();
   const catDocs = CATEGORIES.map((c) => ({
     name: c.name,
     slug: c.slug,
@@ -121,15 +117,16 @@ async function seed() {
     image: docs.find((d) => d.categorySlug === c.slug)?.image || null,
     count: docs.filter((d) => d.categorySlug === c.slug).length,
   }));
-  await Category.insertMany(catDocs);
-  console.log(`🗂️  Seeded ${catDocs.length} categories`);
+  const insertedCats = await prisma.category.createMany({ data: catDocs });
+  console.log(`🗂️  Seeded ${insertedCats.count} categories`);
 
-  await mongoose.disconnect();
+  await prisma.$disconnect();
   console.log('✅ Seed complete. Disconnected.');
   process.exit(0);
 }
 
-seed().catch((err) => {
+seed().catch(async (err) => {
   console.error('❌ Seed failed:', err);
+  await prisma.$disconnect().catch(() => {});
   process.exit(1);
 });

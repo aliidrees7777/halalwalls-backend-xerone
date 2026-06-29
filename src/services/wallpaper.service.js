@@ -13,7 +13,7 @@
  *
  * Returns the standard { message, data, statusCode } envelope payload.
  */
-const Wallpaper = require('../models/wallpaper.schema');
+const prisma = require('../lib/prisma');
 
 const BROWSE_MODES = ['latest', 'popular', 'random', 'live'];
 const DEFAULT_LIMIT = 18;
@@ -47,8 +47,6 @@ const fail = (message, statusCode) => {
   return error;
 };
 
-const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 const slugifyTag = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
@@ -63,10 +61,21 @@ const formatDate = (d) => {
 const clampLimit = (raw) => Math.min(MAX_LIMIT, Math.max(1, parseInt(raw, 10) || DEFAULT_LIMIT));
 const clampPage = (raw) => Math.max(1, parseInt(raw, 10) || 1);
 
+// Fisher-Yates shuffle (used for the `random` browse mode — Postgres has no
+// native Prisma random ordering, so we sample ids in app code).
+const shuffle = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
 // Card shape — matches the frontend `Wallpaper` type.
 function serializeCard(doc, favSet) {
   return {
-    id: String(doc._id),
+    id: String(doc.id),
     slug: doc.slug,
     title: doc.title,
     image: doc.image,
@@ -80,7 +89,7 @@ function serializeCard(doc, favSet) {
     downloadCount: doc.downloadCount || 0,
     views: doc.views || 0,
     favoritesCount: doc.favoritesCount || 0,
-    ...(favSet ? { isFavorite: favSet.has(String(doc._id)) } : {}),
+    ...(favSet ? { isFavorite: favSet.has(String(doc.id)) } : {}),
   };
 }
 
@@ -126,27 +135,36 @@ function resolveSelector(query) {
   return { categorySlug, mode };
 }
 
-// ── GET /wallpapers — list / search / filter / sort / paginate ───────────
-exports.listPublic = async (query = {}, favSet = null) => {
-  const { categorySlug, mode } = resolveSelector(query);
-
-  const filter = { status: 'active' };
-  if (categorySlug) filter.categorySlug = categorySlug;
-  if (mode === 'live') filter.isLive = true;
-  if (query.tag) filter.tags = String(query.tag);
+// Build the Prisma `where` clause shared by list/count.
+function buildWhere(query, categorySlug, mode) {
+  const where = { status: 'active' };
+  if (categorySlug) where.categorySlug = categorySlug;
+  if (mode === 'live') where.isLive = true;
+  if (query.tag) where.tags = { has: String(query.tag) };
 
   // Filter by the wallpaper's native resolution (e.g. "3840x2160"). Accepts the
   // "×" display char too. Combines with category/sort/tag.
   if (query.resolution) {
     const r = String(query.resolution).replace(/×/g, 'x').trim();
-    if (r) filter.resolution = new RegExp(`^${escapeRegex(r)}$`, 'i');
+    if (r) where.resolution = { equals: r, mode: 'insensitive' };
   }
 
   const q = String(query.q || query.search || '').trim();
   if (q) {
-    const rx = new RegExp(escapeRegex(q), 'i');
-    filter.$or = [{ title: rx }, { categorySlug: rx }, { category: rx }, { tags: rx }];
+    where.OR = [
+      { title: { contains: q, mode: 'insensitive' } },
+      { categorySlug: { contains: q, mode: 'insensitive' } },
+      { category: { contains: q, mode: 'insensitive' } },
+      { tags: { has: q } }, // arrays match exact elements (no substring)
+    ];
   }
+  return { where, q };
+}
+
+// ── GET /wallpapers — list / search / filter / sort / paginate ───────────
+exports.listPublic = async (query = {}, favSet = null) => {
+  const { categorySlug, mode } = resolveSelector(query);
+  const { where, q } = buildWhere(query, categorySlug, mode);
 
   const page = clampPage(query.page);
   const limit = clampLimit(query.limit);
@@ -156,16 +174,21 @@ exports.listPublic = async (query = {}, favSet = null) => {
   let total;
 
   if (mode === 'random') {
-    total = await Wallpaper.countDocuments(filter);
-    docs = await Wallpaper.aggregate([{ $match: filter }, { $sample: { size: limit } }]);
+    // Sample `limit` random rows: pull matching ids, shuffle, fetch the slice.
+    const ids = await prisma.wallpaper.findMany({ where, select: { id: true } });
+    total = ids.length;
+    const pick = shuffle(ids.map((r) => r.id)).slice(0, limit);
+    docs = pick.length
+      ? await prisma.wallpaper.findMany({ where: { id: { in: pick } } })
+      : [];
   } else {
-    const sortSpec =
+    const orderBy =
       mode === 'popular'
-        ? { downloadCount: -1, views: -1, createdAt: -1 }
-        : { createdAt: -1 }; // latest / category default
+        ? [{ downloadCount: 'desc' }, { views: 'desc' }, { createdAt: 'desc' }]
+        : [{ createdAt: 'desc' }]; // latest / category default
     [docs, total] = await Promise.all([
-      Wallpaper.find(filter).sort(sortSpec).skip(skip).limit(limit).lean(),
-      Wallpaper.countDocuments(filter),
+      prisma.wallpaper.findMany({ where, orderBy, skip, take: limit }),
+      prisma.wallpaper.count({ where }),
     ]);
   }
 
@@ -191,23 +214,22 @@ exports.listPublic = async (query = {}, favSet = null) => {
 
 // ── GET /wallpapers/:slug — detail (increments view count) ───────────────
 exports.getBySlug = async (slug, favSet = null) => {
-  const doc = await Wallpaper.findOneAndUpdate(
-    { slug, status: 'active' },
-    { $inc: { views: 1 } },
-    { new: true }
-  ).lean();
-  if (!doc) throw fail('Wallpaper not found', 404);
+  // Increment views only on an active match; absent/inactive → 404.
+  const bumped = await prisma.wallpaper.updateMany({
+    where: { slug, status: 'active' },
+    data: { views: { increment: 1 } },
+  });
+  if (bumped.count === 0) throw fail('Wallpaper not found', 404);
 
-  const related = await Wallpaper.find({
-    status: 'active',
-    categorySlug: doc.categorySlug,
-    _id: { $ne: doc._id },
-  })
-    .limit(8)
-    .lean();
+  const doc = await prisma.wallpaper.findUnique({ where: { slug } });
+
+  const related = await prisma.wallpaper.findMany({
+    where: { status: 'active', categorySlug: doc.categorySlug, id: { not: doc.id } },
+    take: 8,
+  });
 
   const wallpaper = serializeDetail(doc, favSet);
-  wallpaper.relatedIds = related.map((r) => String(r._id));
+  wallpaper.relatedIds = related.map((r) => String(r.id));
 
   return {
     message: 'Wallpaper fetched',
@@ -218,27 +240,25 @@ exports.getBySlug = async (slug, favSet = null) => {
 
 // ── GET /wallpapers/:slug/related ────────────────────────────────────────
 exports.related = async (slug, query = {}, favSet = null) => {
-  const base = await Wallpaper.findOne({ slug, status: 'active' }).lean();
+  const base = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
   if (!base) throw fail('Wallpaper not found', 404);
 
   const limit = Math.min(24, Math.max(1, parseInt(query.limit, 10) || 8));
 
-  let docs = await Wallpaper.find({
-    status: 'active',
-    categorySlug: base.categorySlug,
-    _id: { $ne: base._id },
-  })
-    .sort({ downloadCount: -1, createdAt: -1 })
-    .limit(limit)
-    .lean();
+  let docs = await prisma.wallpaper.findMany({
+    where: { status: 'active', categorySlug: base.categorySlug, id: { not: base.id } },
+    orderBy: [{ downloadCount: 'desc' }, { createdAt: 'desc' }],
+    take: limit,
+  });
 
   // Backfill with the latest from other categories if this category is thin.
   if (docs.length < limit) {
-    const excludeIds = [base._id, ...docs.map((d) => d._id)];
-    const extra = await Wallpaper.find({ status: 'active', _id: { $nin: excludeIds } })
-      .sort({ createdAt: -1 })
-      .limit(limit - docs.length)
-      .lean();
+    const excludeIds = [base.id, ...docs.map((d) => d.id)];
+    const extra = await prisma.wallpaper.findMany({
+      where: { status: 'active', id: { notIn: excludeIds } },
+      orderBy: { createdAt: 'desc' },
+      take: limit - docs.length,
+    });
     docs = docs.concat(extra);
   }
 
@@ -251,12 +271,13 @@ exports.related = async (slug, query = {}, favSet = null) => {
 
 // ── POST /wallpapers/:slug/download — track a download ───────────────────
 exports.trackDownload = async (slug, body = {}) => {
-  const doc = await Wallpaper.findOneAndUpdate(
-    { slug, status: 'active' },
-    { $inc: { downloadCount: 1 } },
-    { new: true }
-  ).lean();
-  if (!doc) throw fail('Wallpaper not found', 404);
+  const bumped = await prisma.wallpaper.updateMany({
+    where: { slug, status: 'active' },
+    data: { downloadCount: { increment: 1 } },
+  });
+  if (bumped.count === 0) throw fail('Wallpaper not found', 404);
+
+  const doc = await prisma.wallpaper.findUnique({ where: { slug } });
 
   return {
     message: 'Download tracked',
@@ -271,18 +292,19 @@ exports.trackDownload = async (slug, body = {}) => {
 
 // ── GET /wallpapers/tags — popular tags across active wallpapers ─────────
 // Powers the homepage tag pills (tags users assign to wallpapers at upload).
+// Postgres `unnest` expands the tags[] array so we can group + count per tag.
 exports.listTags = async (query = {}) => {
   const limit = Math.min(60, Math.max(1, parseInt(query.limit, 10) || 24));
-  const rows = await Wallpaper.aggregate([
-    { $match: { status: 'active' } },
-    { $unwind: '$tags' },
-    { $group: { _id: '$tags', count: { $sum: 1 } } },
-    { $sort: { count: -1, _id: 1 } },
-    { $limit: limit },
-  ]);
+  const rows = await prisma.$queryRaw`
+    SELECT t AS tag, count(*)::int AS count
+    FROM hw_wallpapers w, unnest(w.tags) AS t
+    WHERE w.status = 'active'
+    GROUP BY t
+    ORDER BY count DESC, t ASC
+    LIMIT ${limit}`;
   return {
     message: 'Tags fetched',
-    data: { tags: rows.map((r) => ({ tag: r._id, count: r.count })) },
+    data: { tags: rows.map((r) => ({ tag: r.tag, count: Number(r.count) })) },
     statusCode: 200,
   };
 };

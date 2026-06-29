@@ -3,6 +3,5 @@
   "jwtSecret": "test-secret",
   "jwtExpiresIn": "1h",
   "passwordResetExpiresMin": 60,
-  "emailProvider": "smtp",
   "appUrl": "http://localhost:9845"
 }

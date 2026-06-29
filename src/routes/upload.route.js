@@ -7,8 +7,8 @@ const router = express.Router();
 const UploadController = require('../controllers/upload.controller');
 const authorize = require('../middleware/authorize');
 
-// In-memory storage — the buffer is handed to the service, which uploads it to
-// object storage (R2/S3) rather than persisting to local disk here.
+// In-memory storage — the buffer is handed to the service, which will persist
+// it to local disk on the Hostinger VPS (image pipeline wired when configured).
 const ALLOWED_MIME = ['image/jpeg', 'image/png'];
 
 const upload = multer({

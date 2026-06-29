@@ -46,32 +46,49 @@ const jsonErr = (statusCode, message, method, path) => ({
 });
 
 // ── Reusable sample entities ──
-const USER_ID = '66f0c30000000000000000d4';
+// IDs are UUIDs (Postgres/Prisma) — matching what the API actually returns.
+const USER_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const SAMPLE_USER = {
   id: USER_ID,
   firstName: 'Aisha',
   lastName: 'Rahman',
+  name: 'Aisha Rahman',
   email: 'aisha@example.com',
   role: 'user',
   authProvider: 'local',
+  emailVerified: false,
   avatar: null,
-  createdAt: TS,
-};
-const SAMPLE_ADMIN = {
-  id: '66f0c30000000000000000d9',
-  firstName: 'Site',
-  lastName: 'Admin',
-  email: 'admin@halalwalls.com',
-  role: 'admin',
-  authProvider: 'local',
-  avatar: null,
+  banner: null,
+  bio: '',
+  isPremium: false,
+  favorites: [],
+  favoritesCount: 0,
   createdAt: TS,
 };
 const TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+// Admin-facing user shape (serializeAdminUser): no favorites array, adds counts.
+const SAMPLE_ADMIN_USER = {
+  id: USER_ID,
+  firstName: 'Aisha',
+  lastName: 'Rahman',
+  name: 'Aisha Rahman',
+  email: 'aisha@example.com',
+  role: 'user',
+  authProvider: 'local',
+  emailVerified: true,
+  isPremium: false,
+  avatar: null,
+  banner: null,
+  bio: 'Wallpaper enthusiast',
+  favoritesCount: 3,
+  uploadsCount: 1,
+  createdAt: TS,
+  updatedAt: TS,
+};
 
 // ── Reusable sample wallpaper entities ──
 const SAMPLE_WALLPAPER_CARD = {
-  id: '66f1a10000000000000000a1',
+  id: 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1',
   slug: 'neon-metropolis',
   title: 'Neon Metropolis',
   image: 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?w=1200&q=80',
@@ -95,12 +112,43 @@ const SAMPLE_WALLPAPER_DETAIL = {
   preferredResolution: '1920x1080',
   resolutions: ['1920x1080', '2560x1440', '3840x2160'],
   originalUrl: 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?w=1200&q=80',
-  relatedIds: ['66f1a10000000000000000a2', '66f1a10000000000000000a3'],
+  relatedIds: ['a1f0c1d2-2222-4aaa-9bbb-0000000000a2', 'a1f0c1d2-3333-4aaa-9bbb-0000000000a3'],
 };
 const SAMPLE_PAGINATION = { total: 23, page: 1, limit: 18, totalPages: 2, hasNextPage: true, hasPrevPage: false };
 const SAMPLE_DOWNLOAD_RESOLUTIONS = {
   desktop: [{ label: '1920×1080', width: 1920, height: 1080, fileSizeMB: 1.42, device: 'desktop' }],
   mobile: [{ label: '1080×2400', width: 1080, height: 2400, fileSizeMB: 1.64, device: 'mobile' }],
+};
+const SAMPLE_CONTACT_ID = 'd1e2f3a4-b5c6-4d70-8e90-0000000000c1';
+const SAMPLE_WP_ID = 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1';
+const SAMPLE_ADMIN_WALLPAPER = {
+  id: SAMPLE_WP_ID,
+  title: 'Neon Metropolis',
+  slug: 'neon-metropolis',
+  description: 'Neon Metropolis — Space wallpaper in stunning detail.',
+  category: 'Space',
+  categorySlug: 'space',
+  tags: ['neon', 'city', 'night'],
+  image: 'https://cdn.halalwalls.com/neon.jpg',
+  originalUrl: 'https://cdn.halalwalls.com/neon.jpg',
+  thumbnailUrl: 'https://cdn.halalwalls.com/neon.jpg',
+  resolution: '1920x1080',
+  preferredResolution: '1920x1080',
+  resolutions: ['1920x1080', '2560x1440', '3840x2160'],
+  sizeMB: 1.42,
+  width: 1920,
+  height: 1080,
+  author: 'HalalWalls',
+  isPremium: false,
+  isLive: false,
+  status: 'active',
+  downloadCount: 1421,
+  views: 4263,
+  favoritesCount: 12,
+  uploadedById: USER_ID,
+  uploadedBy: { id: USER_ID, name: 'Aisha Rahman', email: 'aisha@example.com' },
+  createdAt: TS,
+  updatedAt: TS,
 };
 
 module.exports = {
@@ -110,7 +158,7 @@ module.exports = {
     description:
       'HalalWalls — a curated wallpaper catalog backend.\n\n' +
       '### User roles & sign-up\n' +
-      '- **user** — **self-signup** via `POST /api/v1/auth/signup` (default role). A **JWT is returned immediately** — no email verification.\n' +
+      '- **user** — **self-signup** via `POST /api/v1/auth/signup` (default role). A **JWT is returned immediately** so the user is signed in right away; the account starts **unverified** and a verification email is sent (`POST /api/v1/auth/verify-email`). Verification does not yet gate access.\n' +
       '- **admin** — **seeded / provisioned only — NO self-signup** (signup with `role: "admin"` is rejected). Manages the catalog under `/api/v1/admin/*`.\n\n' +
       '**Login is role-aware:** `POST /api/v1/auth/login` works for both roles and the response includes `user.role` — the frontend uses it to route to the correct view.\n\n' +
       '### Response envelope\n' +
@@ -122,7 +170,7 @@ module.exports = {
   // (An explicit override is still possible via SWAGGER_SERVER_URL.)
   tags: [
     { name: 'Health', description: 'Service health' },
-    { name: 'Auth', description: 'Authentication — self-signup for USER (no email verification; returns a JWT immediately); role-aware LOGIN for user / admin. Admins are seeded (no self-signup).' },
+    { name: 'Auth', description: 'Authentication — self-signup for USER (returns a JWT immediately; account starts unverified and a verification email is sent); role-aware LOGIN for user / admin. Admins are seeded (no self-signup).' },
     { name: 'Account & Security', description: 'Change password (Bearer, any role)' },
     { name: 'Wallpapers', description: 'Public wallpaper catalog — list/search/filter (browse modes latest|popular|random|live + category slugs), detail, related, and download tracking. No auth required.' },
     { name: 'Favorites', description: 'The signed-in user\'s favorite wallpapers (Bearer token required). Adding/removing keeps each wallpaper\'s favoritesCount in sync. Idempotent.' },
@@ -131,6 +179,7 @@ module.exports = {
     { name: 'Stats', description: 'Public aggregate counters for the landing page.' },
     { name: 'Categories', description: 'Wallpaper category taxonomy (separate from the browse filters). Public list/detail with live counts; create/update/delete are admin (operator) actions used to populate the upload form.' },
     { name: 'Resolutions', description: 'Fixed "browse by resolution" set (desktop/mobile).' },
+    { name: 'Admin', description: 'CMS / admin dashboard (admin role only — Bearer token). Analytics overview, plus management of contacts, wallpapers, moderation, users, categories and favorites. Admins are seeded/provisioned, never self-registered.' },
   ],
   components: {
     securitySchemes: {
@@ -152,14 +201,22 @@ module.exports = {
       },
       UserPublic: {
         type: 'object',
+        description: 'Public-safe user shape returned by auth + profile endpoints (no password/tokens).',
         properties: {
-          id: { type: 'string' },
+          id: { type: 'string', format: 'uuid' },
           firstName: { type: 'string' },
           lastName: { type: 'string' },
+          name: { type: 'string', description: 'Derived "firstName lastName".' },
           email: { type: 'string', format: 'email' },
           role: { type: 'string', enum: ['user', 'admin'] },
           authProvider: { type: 'string', enum: ['local', 'google'] },
-          avatar: { type: 'string', nullable: true },
+          emailVerified: { type: 'boolean' },
+          avatar: { type: 'string', nullable: true, description: 'Image URL' },
+          banner: { type: 'string', nullable: true, description: 'Image URL' },
+          bio: { type: 'string' },
+          isPremium: { type: 'boolean' },
+          favorites: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Favorited wallpaper ids' },
+          favoritesCount: { type: 'integer' },
           createdAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -265,14 +322,15 @@ module.exports = {
         tags: ['Auth'],
         summary: 'User signup (creates role=user)',
         description:
-          'Self-registration. The account is created and a **JWT is returned immediately** (no email verification). ' +
+          'Self-registration. The account is created and a **JWT is returned immediately** (the user is signed in). ' +
+          'The account starts **unverified** and a verification email is sent — confirm via `POST /api/v1/auth/verify-email`. ' +
           '`admin` cannot self-register. password and confirmPassword must match.',
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { $ref: '#/components/schemas/SignupRequest' }, example: { firstName: 'Aisha', lastName: 'Rahman', email: 'aisha@example.com', password: 'password123', confirmPassword: 'password123' } } },
         },
         responses: {
-          201: { description: 'Account created; JWT returned immediately', content: jsonOk('Account created successfully.', { token: TOKEN, user: SAMPLE_USER }, 'POST', '/api/v1/auth/signup', 201) },
+          201: { description: 'Account created (unverified); JWT returned + verification email sent', content: jsonOk('Account created. Please check your email to verify your address.', { token: TOKEN, user: SAMPLE_USER }, 'POST', '/api/v1/auth/signup', 201) },
           400: { description: 'Validation error', content: jsonErr(400, 'Password and confirm password do not match', 'POST', '/api/v1/auth/signup') },
           409: { description: 'Email already exists', content: jsonErr(409, 'An account with this email already exists', 'POST', '/api/v1/auth/signup') },
         },
@@ -338,7 +396,32 @@ module.exports = {
       },
     },
 
+    '/api/v1/auth/verify-email': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Verify email with the token from the verification link',
+        description: 'Local sign-ups start unverified and receive a verification link (`APP_URL/verify-email?token=…`). Google sign-ups are verified automatically.',
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['token'], properties: { token: { type: 'string', example: 'a1b2c3d4…' } } }, example: { token: 'a1b2c3d4e5f6…' } } } },
+        responses: {
+          200: { description: 'Email verified', content: jsonOk('Email verified successfully.', { user: { ...SAMPLE_USER, emailVerified: true } }, 'POST', '/api/v1/auth/verify-email') },
+          400: { description: 'Invalid token', content: jsonErr(400, 'Invalid or already-used verification link', 'POST', '/api/v1/auth/verify-email') },
+          410: { description: 'Token expired' },
+        },
+      },
+    },
+
     // ───────────────────────── Account & Security ─────────────────────────
+    '/api/v1/auth/resend-verification': {
+      post: {
+        tags: ['Account & Security'],
+        summary: 'Resend the email-verification link (authenticated)',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: { description: 'Verification email sent (or already verified)', content: jsonOk('Verification email sent. Please check your inbox.', null, 'POST', '/api/v1/auth/resend-verification') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'POST', '/api/v1/auth/resend-verification') },
+        },
+      },
+    },
     '/api/v1/auth/change-password': {
       post: {
         tags: ['Account & Security'],
@@ -389,6 +472,22 @@ module.exports = {
               'GET',
               '/api/v1/wallpapers'
             ),
+          },
+        },
+      },
+    },
+    '/api/v1/wallpapers/tags': {
+      get: {
+        tags: ['Wallpapers'],
+        summary: 'Popular tags across the catalog (homepage tag pills)',
+        description: 'Most-used tags across active wallpapers, with counts, most popular first. Powers the homepage tag pills.',
+        parameters: [
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 24, maximum: 60 }, description: 'Max tags to return' },
+        ],
+        responses: {
+          200: {
+            description: 'Popular tags with counts',
+            content: jsonOk('Tags fetched', { tags: [{ tag: 'night', count: 3 }, { tag: 'galaxy', count: 2 }, { tag: 'anime', count: 1 }] }, 'GET', '/api/v1/wallpapers/tags'),
           },
         },
       },
@@ -457,7 +556,12 @@ module.exports = {
             content: jsonOk(
               'Profile fetched',
               {
-                user: { ...SAMPLE_USER, name: 'Aisha Rahman', bio: 'Wallpaper enthusiast', banner: null, isPremium: false, favorites: [], favoritesCount: 3 },
+                user: {
+                  ...SAMPLE_USER,
+                  bio: 'Wallpaper enthusiast',
+                  favorites: ['a1f0c1d2-1111-4aaa-9bbb-0000000000a1', 'a1f0c1d2-2222-4aaa-9bbb-0000000000a2', 'a1f0c1d2-3333-4aaa-9bbb-0000000000a3'],
+                  favoritesCount: 3,
+                },
                 favoritesCount: 3,
                 uploadsCount: 1,
               },
@@ -529,23 +633,23 @@ module.exports = {
         tags: ['Favorites'],
         summary: 'Add a wallpaper to favorites (idempotent; bumps favoritesCount)',
         security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'wallpaperId', in: 'path', required: true, schema: { type: 'string' }, example: '66f1a10000000000000000a1' }],
+        parameters: [{ name: 'wallpaperId', in: 'path', required: true, schema: { type: 'string' }, example: 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1' }],
         responses: {
-          200: { description: 'Added (or already present)', content: jsonOk('Added to favorites', { favorites: ['66f1a10000000000000000a1'], wallpaperId: '66f1a10000000000000000a1', isFavorite: true, favoritesCount: 13 }, 'POST', '/api/v1/me/favorites/66f1a10000000000000000a1') },
+          200: { description: 'Added (or already present)', content: jsonOk('Added to favorites', { favorites: ['a1f0c1d2-1111-4aaa-9bbb-0000000000a1'], wallpaperId: 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1', isFavorite: true, favoritesCount: 13 }, 'POST', '/api/v1/me/favorites/a1f0c1d2-1111-4aaa-9bbb-0000000000a1') },
           400: { description: 'Invalid wallpaper id', content: jsonErr(400, 'Invalid wallpaper id', 'POST', '/api/v1/me/favorites/xyz') },
-          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'POST', '/api/v1/me/favorites/66f1a10000000000000000a1') },
-          404: { description: 'Wallpaper not found', content: jsonErr(404, 'Wallpaper not found', 'POST', '/api/v1/me/favorites/66f1a10000000000000000a1') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'POST', '/api/v1/me/favorites/a1f0c1d2-1111-4aaa-9bbb-0000000000a1') },
+          404: { description: 'Wallpaper not found', content: jsonErr(404, 'Wallpaper not found', 'POST', '/api/v1/me/favorites/a1f0c1d2-1111-4aaa-9bbb-0000000000a1') },
         },
       },
       delete: {
         tags: ['Favorites'],
         summary: 'Remove a wallpaper from favorites (idempotent; lowers favoritesCount)',
         security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'wallpaperId', in: 'path', required: true, schema: { type: 'string' }, example: '66f1a10000000000000000a1' }],
+        parameters: [{ name: 'wallpaperId', in: 'path', required: true, schema: { type: 'string' }, example: 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1' }],
         responses: {
-          200: { description: 'Removed (or was not present)', content: jsonOk('Removed from favorites', { favorites: [], wallpaperId: '66f1a10000000000000000a1', isFavorite: false, favoritesCount: 12 }, 'DELETE', '/api/v1/me/favorites/66f1a10000000000000000a1') },
+          200: { description: 'Removed (or was not present)', content: jsonOk('Removed from favorites', { favorites: [], wallpaperId: 'a1f0c1d2-1111-4aaa-9bbb-0000000000a1', isFavorite: false, favoritesCount: 12 }, 'DELETE', '/api/v1/me/favorites/a1f0c1d2-1111-4aaa-9bbb-0000000000a1') },
           400: { description: 'Invalid wallpaper id', content: jsonErr(400, 'Invalid wallpaper id', 'DELETE', '/api/v1/me/favorites/xyz') },
-          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'DELETE', '/api/v1/me/favorites/66f1a10000000000000000a1') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'DELETE', '/api/v1/me/favorites/a1f0c1d2-1111-4aaa-9bbb-0000000000a1') },
         },
       },
     },
@@ -574,7 +678,7 @@ module.exports = {
           },
         },
         responses: {
-          201: { description: 'Message received', content: jsonOk("Thanks! Your message has been received — we'll get back to you soon.", { id: '66f2b20000000000000000c1', status: 'new' }, 'POST', '/api/v1/contact', 201) },
+          201: { description: 'Message received', content: jsonOk("Thanks! Your message has been received — we'll get back to you soon.", { id: 'd1e2f3a4-b5c6-4d70-8e90-0000000000c1', status: 'new' }, 'POST', '/api/v1/contact', 201) },
           400: { description: 'Validation error', content: jsonErr(400, 'Name, email and message are required', 'POST', '/api/v1/contact') },
         },
       },
@@ -600,7 +704,7 @@ module.exports = {
         responses: {
           200: {
             description: 'Categories',
-            content: jsonOk('Categories fetched', { categories: [{ id: '66f3c10000000000000000e1', name: 'Anime', slug: 'anime', description: 'Anime characters, scenes and posters.', image: null, isPremium: false, order: 2, count: 5 }] }, 'GET', '/api/v1/categories'),
+            content: jsonOk('Categories fetched', { categories: [{ id: 'c1a2b3c4-d5e6-4f70-8a90-0000000000e1', name: 'Anime', slug: 'anime', description: 'Anime characters, scenes and posters.', image: null, isPremium: false, order: 2, count: 5 }] }, 'GET', '/api/v1/categories'),
           },
         },
       },
@@ -614,7 +718,7 @@ module.exports = {
           content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, slug: { type: 'string' }, description: { type: 'string' }, image: { type: 'string' }, order: { type: 'integer' }, isPremium: { type: 'boolean' } } }, example: { name: 'Nature', description: 'Landscapes & scenery', order: 10 } } },
         },
         responses: {
-          201: { description: 'Created', content: jsonOk('Category created', { category: { id: '66f3c10000000000000000e9', name: 'Nature', slug: 'nature', description: 'Landscapes & scenery', image: null, isPremium: false, order: 10, count: 0 } }, 'POST', '/api/v1/categories', 201) },
+          201: { description: 'Created', content: jsonOk('Category created', { category: { id: 'c1a2b3c4-d5e6-4f70-8a90-0000000000e9', name: 'Nature', slug: 'nature', description: 'Landscapes & scenery', image: null, isPremium: false, order: 10, count: 0 } }, 'POST', '/api/v1/categories', 201) },
           400: { description: 'Name required', content: jsonErr(400, 'Category name is required', 'POST', '/api/v1/categories') },
           401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'POST', '/api/v1/categories') },
           403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'POST', '/api/v1/categories') },
@@ -628,7 +732,7 @@ module.exports = {
         summary: 'Get a category by slug (with live count)',
         parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' }, example: 'anime' }],
         responses: {
-          200: { description: 'Category', content: jsonOk('Category fetched', { category: { id: '66f3c10000000000000000e1', name: 'Anime', slug: 'anime', description: '', image: null, isPremium: false, order: 2, count: 5 } }, 'GET', '/api/v1/categories/anime') },
+          200: { description: 'Category', content: jsonOk('Category fetched', { category: { id: 'c1a2b3c4-d5e6-4f70-8a90-0000000000e1', name: 'Anime', slug: 'anime', description: '', image: null, isPremium: false, order: 2, count: 5 } }, 'GET', '/api/v1/categories/anime') },
           404: { description: 'Not found', content: jsonErr(404, 'Category not found', 'GET', '/api/v1/categories/unknown') },
         },
       },
@@ -639,7 +743,7 @@ module.exports = {
         parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' }, example: 'anime' }],
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, image: { type: 'string' }, order: { type: 'integer' }, isPremium: { type: 'boolean' } } }, example: { description: 'Updated description', order: 3 } } } },
         responses: {
-          200: { description: 'Updated', content: jsonOk('Category updated', { category: { id: '66f3c10000000000000000e1', name: 'Anime', slug: 'anime', description: 'Updated description', image: null, isPremium: false, order: 3, count: 5 } }, 'PATCH', '/api/v1/categories/anime') },
+          200: { description: 'Updated', content: jsonOk('Category updated', { category: { id: 'c1a2b3c4-d5e6-4f70-8a90-0000000000e1', name: 'Anime', slug: 'anime', description: 'Updated description', image: null, isPremium: false, order: 3, count: 5 } }, 'PATCH', '/api/v1/categories/anime') },
           404: { description: 'Not found', content: jsonErr(404, 'Category not found', 'PATCH', '/api/v1/categories/unknown') },
         },
       },
@@ -666,10 +770,370 @@ module.exports = {
       },
     },
 
+    // ───────────────────────── Admin / CMS ─────────────────────────
+    '/api/v1/admin/overview': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Dashboard analytics overview (admin)',
+        description: 'Aggregate counters for the CMS dashboard: users, wallpapers (by status), categories, contacts (by status) and engagement totals. Admin only.',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Aggregate counts',
+            content: jsonOk(
+              'Admin overview',
+              {
+                users: { total: 128, admins: 2, regular: 126, premium: 14, verified: 110, unverified: 18 },
+                wallpapers: { total: 240, active: 210, pending: 8, hidden: 22, live: 12, premium: 30 },
+                categories: { total: 9 },
+                contacts: { total: 17, new: 5, read: 9, resolved: 3 },
+                engagement: { totalDownloads: 38801, totalViews: 116405, totalFavorites: 542 },
+              },
+              'GET',
+              '/api/v1/admin/overview'
+            ),
+          },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/overview') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/overview') },
+        },
+      },
+    },
+    '/api/v1/admin/contacts': {
+      get: {
+        tags: ['Admin'],
+        summary: 'List inbound contact messages (admin)',
+        description: 'Paginated list of contact-form submissions, newest first. Filter by `status` and/or search `q` (email/name/message).',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['new', 'read', 'resolved'] }, description: 'Filter by status' },
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Search email / name / message' },
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 } },
+        ],
+        responses: {
+          200: {
+            description: 'Paginated contacts',
+            content: jsonOk(
+              'Contacts fetched',
+              {
+                contacts: [{ id: SAMPLE_CONTACT_ID, name: 'Aisha Rahman', email: 'aisha@example.com', reason: 'Feedback', message: 'Love the wallpapers!', status: 'new', createdAt: TS }],
+                pagination: { total: 1, page: 1, limit: 20, totalPages: 1, hasNextPage: false, hasPrevPage: false },
+              },
+              'GET',
+              '/api/v1/admin/contacts'
+            ),
+          },
+          400: { description: 'Invalid status filter', content: jsonErr(400, 'status must be one of: new, read, resolved', 'GET', '/api/v1/admin/contacts') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/contacts') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/contacts') },
+        },
+      },
+    },
+    '/api/v1/admin/contacts/{id}': {
+      patch: {
+        tags: ['Admin'],
+        summary: 'Update a contact message status (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_CONTACT_ID }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['new', 'read', 'resolved'] } } }, example: { status: 'resolved' } } },
+        },
+        responses: {
+          200: { description: 'Updated', content: jsonOk('Contact updated', { contact: { id: SAMPLE_CONTACT_ID, name: 'Aisha Rahman', email: 'aisha@example.com', reason: 'Feedback', message: 'Love the wallpapers!', status: 'resolved', createdAt: TS } }, 'PATCH', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          400: { description: 'Invalid status / id', content: jsonErr(400, 'status is required and must be one of: new, read, resolved', 'PATCH', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'PATCH', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'PATCH', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Contact not found', 'PATCH', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+        },
+      },
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete a contact message (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_CONTACT_ID }],
+        responses: {
+          200: { description: 'Deleted', content: jsonOk('Contact deleted', { id: SAMPLE_CONTACT_ID }, 'DELETE', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'DELETE', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'DELETE', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Contact not found', 'DELETE', `/api/v1/admin/contacts/${SAMPLE_CONTACT_ID}`) },
+        },
+      },
+    },
+
+    '/api/v1/admin/wallpapers': {
+      get: {
+        tags: ['Admin'],
+        summary: 'List wallpapers — all statuses (admin)',
+        description: 'Full catalog management view (active + pending + hidden). Search/filter/sort/paginate. Unlike the public list, this returns every status and the full record incl. uploader.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['active', 'pending', 'hidden'] } },
+          { name: 'category', in: 'query', schema: { type: 'string' }, description: 'categorySlug' },
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Search title / category / tags' },
+          { name: 'isPremium', in: 'query', schema: { type: 'boolean' } },
+          { name: 'isLive', in: 'query', schema: { type: 'boolean' } },
+          { name: 'sort', in: 'query', schema: { type: 'string', enum: ['latest', 'oldest', 'popular', 'views', 'title'], default: 'latest' } },
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 } },
+        ],
+        responses: {
+          200: {
+            description: 'Paginated wallpapers (all statuses)',
+            content: jsonOk('Wallpapers fetched', { wallpapers: [SAMPLE_ADMIN_WALLPAPER], pagination: { total: 1, page: 1, limit: 20, totalPages: 1, hasNextPage: false, hasPrevPage: false } }, 'GET', '/api/v1/admin/wallpapers'),
+          },
+          400: { description: 'Invalid status', content: jsonErr(400, 'status must be one of: active, pending, hidden', 'GET', '/api/v1/admin/wallpapers') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/wallpapers') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/wallpapers') },
+        },
+      },
+      post: {
+        tags: ['Admin'],
+        summary: 'Create a wallpaper from metadata + image URL (admin)',
+        description: 'Creates a catalog wallpaper. The image is provided as a URL (the media-upload/processing pipeline is separate). `slug` is derived from `title` and auto-uniquified. Defaults `status` to `active`.',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['title', 'image'],
+                properties: {
+                  title: { type: 'string' },
+                  image: { type: 'string', description: 'Image URL (required)' },
+                  slug: { type: 'string', description: 'Optional; derived from title if omitted' },
+                  description: { type: 'string' },
+                  category: { type: 'string', description: 'Display label; derived from categorySlug if omitted' },
+                  categorySlug: { type: 'string', example: 'space' },
+                  tags: { type: 'array', items: { type: 'string' } },
+                  originalUrl: { type: 'string' },
+                  thumbnailUrl: { type: 'string' },
+                  resolution: { type: 'string', example: '1920x1080' },
+                  resolutions: { type: 'array', items: { type: 'string' } },
+                  sizeMB: { type: 'number' },
+                  width: { type: 'integer' },
+                  height: { type: 'integer' },
+                  author: { type: 'string' },
+                  isPremium: { type: 'boolean' },
+                  isLive: { type: 'boolean' },
+                  status: { type: 'string', enum: ['active', 'pending', 'hidden'], default: 'active' },
+                },
+              },
+              example: { title: 'Neon Metropolis', image: 'https://cdn.halalwalls.com/neon.jpg', categorySlug: 'space', tags: ['neon', 'city', 'night'], resolution: '1920x1080' },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Created', content: jsonOk('Wallpaper created', { wallpaper: SAMPLE_ADMIN_WALLPAPER }, 'POST', '/api/v1/admin/wallpapers', 201) },
+          400: { description: 'Validation error', content: jsonErr(400, 'An image URL is required', 'POST', '/api/v1/admin/wallpapers') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'POST', '/api/v1/admin/wallpapers') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'POST', '/api/v1/admin/wallpapers') },
+        },
+      },
+    },
+    '/api/v1/admin/wallpapers/pending': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Moderation queue — pending submissions (admin)',
+        description: 'User-submitted wallpapers awaiting review (status = pending), oldest first. Approve/reject them via the endpoints below.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 } },
+        ],
+        responses: {
+          200: { description: 'Pending wallpapers', content: jsonOk('Pending wallpapers fetched', { wallpapers: [{ ...SAMPLE_ADMIN_WALLPAPER, status: 'pending' }], pagination: { total: 1, page: 1, limit: 20, totalPages: 1, hasNextPage: false, hasPrevPage: false } }, 'GET', '/api/v1/admin/wallpapers/pending') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/wallpapers/pending') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/wallpapers/pending') },
+        },
+      },
+    },
+    '/api/v1/admin/wallpapers/{id}': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Get a wallpaper by id — any status (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_WP_ID }],
+        responses: {
+          200: { description: 'Wallpaper', content: jsonOk('Wallpaper fetched', { wallpaper: SAMPLE_ADMIN_WALLPAPER }, 'GET', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          400: { description: 'Invalid id', content: jsonErr(400, 'Invalid wallpaper id', 'GET', '/api/v1/admin/wallpapers/not-a-uuid') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Wallpaper not found', 'GET', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+        },
+      },
+      patch: {
+        tags: ['Admin'],
+        summary: 'Update a wallpaper (admin)',
+        description: 'Update any editable field, including `status`, `isPremium`, `isLive`, tags and image URLs. Changing `slug` to one already in use returns 409.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_WP_ID }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, slug: { type: 'string' }, description: { type: 'string' }, category: { type: 'string' }, categorySlug: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, image: { type: 'string' }, originalUrl: { type: 'string' }, thumbnailUrl: { type: 'string' }, resolution: { type: 'string' }, preferredResolution: { type: 'string' }, resolutions: { type: 'array', items: { type: 'string' } }, sizeMB: { type: 'number' }, width: { type: 'integer' }, height: { type: 'integer' }, author: { type: 'string' }, isPremium: { type: 'boolean' }, isLive: { type: 'boolean' }, status: { type: 'string', enum: ['active', 'pending', 'hidden'] } } }, example: { title: 'Neon Metropolis (Remastered)', status: 'active', isPremium: true } } },
+        },
+        responses: {
+          200: { description: 'Updated', content: jsonOk('Wallpaper updated', { wallpaper: { ...SAMPLE_ADMIN_WALLPAPER, isPremium: true } }, 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          400: { description: 'Validation error', content: jsonErr(400, 'status must be one of: active, pending, hidden', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Wallpaper not found', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          409: { description: 'Slug already exists', content: jsonErr(409, 'A wallpaper with this slug already exists', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+        },
+      },
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete a wallpaper (admin)',
+        description: 'Permanently deletes the wallpaper. Its favorites are removed automatically (cascade).',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_WP_ID }],
+        responses: {
+          200: { description: 'Deleted', content: jsonOk('Wallpaper deleted', { id: SAMPLE_WP_ID }, 'DELETE', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'DELETE', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'DELETE', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Wallpaper not found', 'DELETE', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}`) },
+        },
+      },
+    },
+    '/api/v1/admin/wallpapers/{id}/approve': {
+      patch: {
+        tags: ['Admin'],
+        summary: 'Approve a pending wallpaper → active (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_WP_ID }],
+        responses: {
+          200: { description: 'Approved (status → active)', content: jsonOk('Wallpaper approved', { wallpaper: { ...SAMPLE_ADMIN_WALLPAPER, status: 'active' } }, 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/approve`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/approve`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/approve`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Wallpaper not found', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/approve`) },
+        },
+      },
+    },
+    '/api/v1/admin/wallpapers/{id}/reject': {
+      patch: {
+        tags: ['Admin'],
+        summary: 'Reject a pending wallpaper → hidden (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: SAMPLE_WP_ID }],
+        responses: {
+          200: { description: 'Rejected (status → hidden)', content: jsonOk('Wallpaper rejected', { wallpaper: { ...SAMPLE_ADMIN_WALLPAPER, status: 'hidden' } }, 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/reject`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/reject`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/reject`) },
+          404: { description: 'Not found', content: jsonErr(404, 'Wallpaper not found', 'PATCH', `/api/v1/admin/wallpapers/${SAMPLE_WP_ID}/reject`) },
+        },
+      },
+    },
+
+    '/api/v1/admin/users': {
+      get: {
+        tags: ['Admin'],
+        summary: 'List users — search / filter / paginate (admin)',
+        description: 'Each user includes `favoritesCount` and `uploadsCount`. Filter by `role`, `verified`, `isPremium`; search `q` (email/first/last name).',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'role', in: 'query', schema: { type: 'string', enum: ['user', 'admin'] } },
+          { name: 'verified', in: 'query', schema: { type: 'boolean' }, description: 'Filter by emailVerified' },
+          { name: 'isPremium', in: 'query', schema: { type: 'boolean' } },
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Search email / first / last name' },
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 } },
+        ],
+        responses: {
+          200: {
+            description: 'Paginated users',
+            content: jsonOk('Users fetched', { users: [SAMPLE_ADMIN_USER], pagination: { total: 1, page: 1, limit: 20, totalPages: 1, hasNextPage: false, hasPrevPage: false } }, 'GET', '/api/v1/admin/users'),
+          },
+          400: { description: 'Invalid role filter', content: jsonErr(400, 'role must be one of: user, admin', 'GET', '/api/v1/admin/users') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/users') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/users') },
+        },
+      },
+    },
+    '/api/v1/admin/users/{id}': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Get a user by id + counts (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: USER_ID }],
+        responses: {
+          200: { description: 'User', content: jsonOk('User fetched', { user: SAMPLE_ADMIN_USER }, 'GET', `/api/v1/admin/users/${USER_ID}`) },
+          400: { description: 'Invalid id', content: jsonErr(400, 'Invalid user id', 'GET', '/api/v1/admin/users/not-a-uuid') },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', `/api/v1/admin/users/${USER_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', `/api/v1/admin/users/${USER_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'User not found', 'GET', `/api/v1/admin/users/${USER_ID}`) },
+        },
+      },
+      patch: {
+        tags: ['Admin'],
+        summary: 'Update a user — account fields only (admin)',
+        description: 'Editable fields: firstName, lastName, bio, avatar, banner. **Role and premium are NOT editable here** (premium is subscription-driven; role is provisioned).',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: USER_ID }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object', properties: { firstName: { type: 'string' }, lastName: { type: 'string' }, bio: { type: 'string' }, avatar: { type: 'string' }, banner: { type: 'string' } } }, example: { firstName: 'Aisha', bio: 'Updated by admin' } } },
+        },
+        responses: {
+          200: { description: 'Updated', content: jsonOk('User updated', { user: { ...SAMPLE_ADMIN_USER, bio: 'Updated by admin' } }, 'PATCH', `/api/v1/admin/users/${USER_ID}`) },
+          400: { description: 'No valid fields / empty name', content: jsonErr(400, 'No valid fields to update (allowed: firstName, lastName, bio, avatar, banner)', 'PATCH', `/api/v1/admin/users/${USER_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'PATCH', `/api/v1/admin/users/${USER_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'PATCH', `/api/v1/admin/users/${USER_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'User not found', 'PATCH', `/api/v1/admin/users/${USER_ID}`) },
+        },
+      },
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete a user (admin)',
+        description: 'Safety guards: an admin cannot delete their own account, and the last remaining admin cannot be deleted. The user’s favorites are removed (cascade); wallpapers they uploaded are kept (uploader set to null).',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' }, example: USER_ID }],
+        responses: {
+          200: { description: 'Deleted', content: jsonOk('User deleted', { id: USER_ID }, 'DELETE', `/api/v1/admin/users/${USER_ID}`) },
+          400: { description: 'Guard hit (self-delete / last admin)', content: jsonErr(400, 'You cannot delete your own account', 'DELETE', `/api/v1/admin/users/${USER_ID}`) },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'DELETE', `/api/v1/admin/users/${USER_ID}`) },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'DELETE', `/api/v1/admin/users/${USER_ID}`) },
+          404: { description: 'Not found', content: jsonErr(404, 'User not found', 'DELETE', `/api/v1/admin/users/${USER_ID}`) },
+        },
+      },
+    },
+    '/api/v1/admin/favorites': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Favorites analytics — most-favorited wallpapers (admin)',
+        description: 'Read-only ranking of wallpapers by favorite count (from the join table), highest first. Zero-favorite wallpapers are excluded. Paginated.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'page', in: 'query', schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 20, maximum: 100 } },
+        ],
+        responses: {
+          200: {
+            description: 'Ranked wallpapers + counts',
+            content: jsonOk(
+              'Favorites analytics fetched',
+              {
+                wallpapers: [
+                  { id: SAMPLE_WP_ID, favorites: 42, title: 'Neon Metropolis', slug: 'neon-metropolis', image: 'https://cdn.halalwalls.com/neon.jpg', category: 'space', status: 'active' },
+                ],
+                pagination: { total: 1, page: 1, limit: 20, totalPages: 1, hasNextPage: false, hasPrevPage: false },
+              },
+              'GET',
+              '/api/v1/admin/favorites'
+            ),
+          },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/favorites') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/favorites') },
+        },
+      },
+    },
+
     // ─────────────────────────────────────────────────────────────────────
-    // TODO — remaining surfaces (parked, pending client discussion):
-    //   Uploads — POST /api/v1/uploads  (media pipeline → R2)
-    //   Admin   — moderation (admin role; admins are seeded, not self-registered)
+    // Admin/CMS CRUD plan — all quarters' endpoints are now documented above.
+    // Categories management lives under the public-style /api/v1/categories
+    // paths (create/update/delete are admin-guarded).
+    // Parked (needs credentials / media pipeline):
+    //   Uploads — POST /api/v1/uploads  (image processing → Hostinger VPS storage)
     // ─────────────────────────────────────────────────────────────────────
   },
 };
