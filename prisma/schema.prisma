@@ -49,6 +49,12 @@ model User {
   bio                      String       @default("")
   banner                   String?
   isPremium                Boolean      @default(false)
+  // Stripe subscription state (monthly premium plan)
+  stripeCustomerId         String?      @unique
+  stripeSubscriptionId     String?
+  subscriptionStatus       String? // active | trialing | past_due | canceled | ...
+  subscriptionPlan         String? // e.g. "monthly"
+  currentPeriodEnd         DateTime?
   passwordResetToken       String?
   passwordResetExpires     DateTime?
   sessionsValidFrom        DateTime?

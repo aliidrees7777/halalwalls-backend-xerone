@@ -23,6 +23,16 @@ exports.updateMe = async (req, res, next) => {
   }
 };
 
+// DELETE /api/v1/me — permanently delete the signed-in user's own account.
+exports.deleteMe = async (req, res, next) => {
+  try {
+    const response = await UserService.deleteMe(req.user.id);
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // GET /api/v1/me/uploads — wallpapers uploaded by the current user.
 exports.listUploads = async (req, res, next) => {
   try {

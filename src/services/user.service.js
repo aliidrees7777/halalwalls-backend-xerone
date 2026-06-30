@@ -9,6 +9,7 @@
  * (userId, wallpaperId) means favoriting twice never double-counts).
  */
 const prisma = require('../lib/prisma');
+const stripe = require('../lib/stripe');
 const { serializeUser } = require('../helpers/serialize');
 const { serializeCard } = require('./wallpaper.service');
 
@@ -205,4 +206,34 @@ exports.listUploads = async (userId) => {
     data: { wallpapers, count: wallpapers.length },
     statusCode: 200,
   };
+};
+
+// ── DELETE /me — permanently delete the signed-in user's own account ──────
+// Cancels any live Stripe subscription (best-effort), guards against removing
+// the last admin, then deletes the user. Favorites cascade-delete; uploaded
+// wallpapers are kept with uploadedById set to null (per the schema's onDelete
+// rules — same outcome as the admin delete-user path).
+exports.deleteMe = async (userId) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw fail('User not found', 404);
+
+  // Never leave the platform without at least one admin.
+  if (user.role === 'admin') {
+    const admins = await prisma.user.count({ where: { role: 'admin' } });
+    if (admins <= 1) throw fail('Cannot delete the last admin account', 400);
+  }
+
+  // Best-effort: stop future billing by cancelling the live subscription. A
+  // failure here (Stripe down, already cancelled, lifetime plan, etc.) must not
+  // block account deletion.
+  if (stripe && user.stripeSubscriptionId) {
+    try {
+      await stripe.subscriptions.cancel(user.stripeSubscriptionId);
+    } catch {
+      /* ignore — proceed with deletion regardless */
+    }
+  }
+
+  await prisma.user.delete({ where: { id: userId } });
+  return { message: 'Account deleted', data: { id: userId }, statusCode: 200 };
 };

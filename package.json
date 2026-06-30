@@ -36,6 +36,7 @@
     "nodemailer": "^6.9.14",
     "prisma": "6.19.3",
     "resend": "^6.16.0",
+    "stripe": "^22.3.0",
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {

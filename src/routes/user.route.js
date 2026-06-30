@@ -12,6 +12,9 @@ router.get('/', authorize(['user', 'admin']), UserController.getMe);
 // Update editable profile fields (name, bio, avatar, banner).
 router.patch('/', authorize(['user', 'admin']), UserController.updateMe);
 
+// Permanently delete the current user's own account.
+router.delete('/', authorize(['user', 'admin']), UserController.deleteMe);
+
 // Wallpapers uploaded by the current user (all statuses).
 router.get('/uploads', authorize(['user', 'admin']), UserController.listUploads);
 

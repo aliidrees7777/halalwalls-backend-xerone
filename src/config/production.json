@@ -9,7 +9,7 @@
   "googleClientSecret": "set-via-GOOGLE_CLIENT_SECRET-env",
   "googleRedirectUri": "https://halalwalls.com/api/v1/auth/google/callback",
 
-  "resendApiKey": "set-via-RESEND_API_KEY-env",
+  "resendApiKey": "re_5KDvjMAn_EoBFxCzS2Gj3hdrvKwAWJDL6",
   "emailFrom": "no-reply@halalwalls.com",
   "emailFromName": "HalalWalls",
 

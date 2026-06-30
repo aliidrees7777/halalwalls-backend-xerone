@@ -10,7 +10,7 @@
   "googleClientSecret": "GOCSPX-dummyClientSecretReplaceMe",
   "googleRedirectUri": "http://localhost:3662/api/v1/auth/google/callback",
 
-  "resendApiKey": "re_ReplaceMeWithYourResendApiKey",
+  "resendApiKey": "re_5KDvjMAn_EoBFxCzS2Gj3hdrvKwAWJDL6",
   "emailFrom": "no-reply@halalwalls.com",
   "emailFromName": "HalalWalls",
 

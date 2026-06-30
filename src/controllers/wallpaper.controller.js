@@ -51,7 +51,7 @@ exports.related = async (req, res, next) => {
 // Track a download (increments downloadCount) and return the asset URL.
 exports.trackDownload = async (req, res, next) => {
   try {
-    const response = await WallpaperService.trackDownload(req.params.slug, req.body || {});
+    const response = await WallpaperService.trackDownload(req.params.slug, req.body || {}, req.user && req.user.id);
     res.sendSuccess(response.message, response.data, response.statusCode);
   } catch (error) {
     next(error);

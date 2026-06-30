@@ -29,6 +29,14 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // explicit preflight for all routes
 
+// Stripe webhook — MUST receive the raw body for signature verification, so it
+// is registered BEFORE express.json() (which would otherwise consume the body).
+app.post(
+  '/api/v1/webhooks/stripe',
+  express.raw({ type: 'application/json' }),
+  require('./controllers/subscription.controller').webhook
+);
+
 // 2 MB limit accommodates browser-compressed profile avatar/banner data URLs
 // (interim, until the Hostinger upload pipeline stores them as file URLs).
 app.use(express.json({ limit: '2mb' }));
@@ -70,6 +78,7 @@ app.use('/api/v1/contact', require('./routes/contact.route'));
 app.use('/api/v1/me', require('./routes/user.route'));
 app.use('/api/v1/uploads', require('./routes/upload.route'));
 app.use('/api/v1/admin', require('./routes/admin.route'));
+app.use('/api/v1/subscriptions', require('./routes/subscription.route'));
 
 // 404 — unmatched routes flow through the standard error envelope.
 app.use((req, res, next) => {

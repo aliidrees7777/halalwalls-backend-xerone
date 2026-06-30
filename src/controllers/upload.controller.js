@@ -16,7 +16,9 @@ exports.createUpload = async (req, res, next) => {
       return next(bad('An image file is required'));
     }
 
-    const response = await UploadService.createUpload(req.user.id, req.file, req.body);
+    // Absolute base URL for the stored image (e.g. http://localhost:3662).
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const response = await UploadService.createUpload(req.user.id, req.file, req.body, origin);
     res.sendSuccess(response.message, response.data, response.statusCode);
   } catch (error) {
     next(error);

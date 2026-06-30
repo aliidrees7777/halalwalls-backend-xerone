@@ -270,20 +270,33 @@ exports.related = async (slug, query = {}, favSet = null) => {
 };
 
 // ── POST /wallpapers/:slug/download — track a download ───────────────────
-exports.trackDownload = async (slug, body = {}) => {
-  const bumped = await prisma.wallpaper.updateMany({
-    where: { slug, status: 'active' },
+exports.trackDownload = async (slug, body = {}, userId = null) => {
+  const doc = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
+  if (!doc) throw fail('Wallpaper not found', 404);
+
+  // Premium gating: premium wallpapers are downloadable only by premium members.
+  // Normal users may download non-premium wallpapers only. The user's current
+  // isPremium is read from the DB (authoritative — it can change after the token
+  // was issued, e.g. once a subscription activates).
+  if (doc.isPremium) {
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId }, select: { isPremium: true } })
+      : null;
+    if (!user || !user.isPremium) {
+      throw fail('This is a premium wallpaper — upgrade to Premium to download it.', 403);
+    }
+  }
+
+  await prisma.wallpaper.update({
+    where: { id: doc.id },
     data: { downloadCount: { increment: 1 } },
   });
-  if (bumped.count === 0) throw fail('Wallpaper not found', 404);
-
-  const doc = await prisma.wallpaper.findUnique({ where: { slug } });
 
   return {
     message: 'Download tracked',
     data: {
       url: doc.originalUrl || doc.image,
-      downloadCount: doc.downloadCount,
+      downloadCount: doc.downloadCount + 1,
       resolution: (body && body.resolution) || doc.preferredResolution || doc.resolution || null,
     },
     statusCode: 200,
