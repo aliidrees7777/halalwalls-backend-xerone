@@ -40,6 +40,13 @@ const authorize = (allowedRoles = []) => async (req, res, next) => {
       return next(error);
     }
 
+    // Soft-deleted (deactivated) accounts cannot use the API.
+    if (user.isDeleted) {
+      const error = new Error('This account is deactivated');
+      error.statusCode = 401;
+      return next(error);
+    }
+
     // "Log out of all devices" — reject tokens issued before sessionsValidFrom.
     // Second-granularity (iat is in seconds) so a token re-issued by
     // change-password (same second) stays valid while older ones are rejected.

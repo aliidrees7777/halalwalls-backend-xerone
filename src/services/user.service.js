@@ -208,32 +208,45 @@ exports.listUploads = async (userId) => {
   };
 };
 
-// ── DELETE /me — permanently delete the signed-in user's own account ──────
-// Cancels any live Stripe subscription (best-effort), guards against removing
-// the last admin, then deletes the user. Favorites cascade-delete; uploaded
-// wallpapers are kept with uploadedById set to null (per the schema's onDelete
-// rules — same outcome as the admin delete-user path).
+// ── DELETE /me — SOFT-delete the signed-in user's own account ─────────────
+// The row and all data stay in the DB. The account can no longer sign in
+// (blocked by isDeleted), existing tokens are invalidated (sessionsValidFrom),
+// and future billing is stopped. The user can reactivate later via /auth/reactivate.
 exports.deleteMe = async (userId) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw fail('User not found', 404);
+  if (user.isDeleted) throw fail('This account is already deactivated', 400);
 
-  // Never leave the platform without at least one admin.
+  // Never leave the platform without at least one active admin.
   if (user.role === 'admin') {
-    const admins = await prisma.user.count({ where: { role: 'admin' } });
-    if (admins <= 1) throw fail('Cannot delete the last admin account', 400);
+    const admins = await prisma.user.count({ where: { role: 'admin', isDeleted: false } });
+    if (admins <= 1) throw fail('Cannot deactivate the last admin account', 400);
   }
 
-  // Best-effort: stop future billing by cancelling the live subscription. A
-  // failure here (Stripe down, already cancelled, lifetime plan, etc.) must not
-  // block account deletion.
+  // Best-effort: stop future billing by cancelling any live subscription.
   if (stripe && user.stripeSubscriptionId) {
     try {
       await stripe.subscriptions.cancel(user.stripeSubscriptionId);
     } catch {
-      /* ignore — proceed with deletion regardless */
+      /* ignore — proceed with deactivation regardless */
     }
   }
 
-  await prisma.user.delete({ where: { id: userId } });
-  return { message: 'Account deleted', data: { id: userId }, statusCode: 200 };
+  // Lifetime access is permanent, so it survives reactivation; recurring premium
+  // ends with the cancelled subscription.
+  const keepLifetime = user.subscriptionPlan === 'lifetime';
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      isDeleted: true,
+      deletedAt: new Date(),
+      sessionsValidFrom: new Date(), // invalidate every existing token
+      ...(keepLifetime
+        ? {}
+        : { isPremium: false, subscriptionStatus: 'canceled', stripeSubscriptionId: null }),
+    },
+  });
+
+  return { message: 'Account deactivated', data: { id: userId }, statusCode: 200 };
 };

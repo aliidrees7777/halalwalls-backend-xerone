@@ -14,6 +14,29 @@
  * Returns the standard { message, data, statusCode } envelope payload.
  */
 const prisma = require('../lib/prisma');
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+const { fetchSource, renderJpeg, CACHE_DIR } = require('../helpers/download-image');
+
+// Short-lived signed token for a resolution download. Issued only after the
+// premium gate passes (trackDownload) and validated by the file endpoint — so
+// window.open() downloads (which can't send an auth header) stay gated.
+const DOWNLOAD_SECRET = () => process.env.JWT_SECRET || 'halalwalls-dev-secret';
+const DL_MIN = 100;
+const DL_MAX = 4096;
+
+// Normalise a resolution string → { w, h } or { original: true }.
+function parseResolution(input) {
+  const s = String(input || '').toLowerCase().replace(/[×\s]/g, 'x').trim();
+  if (!s || s === 'original') return { original: true };
+  const m = s.match(/^(\d{2,5})x(\d{2,5})$/);
+  if (!m) return { original: true };
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (w < DL_MIN || h < DL_MIN || w > DL_MAX || h > DL_MAX) return { original: true };
+  return { w, h };
+}
 
 const BROWSE_MODES = ['latest', 'popular', 'random', 'live'];
 const DEFAULT_LIMIT = 18;
@@ -270,7 +293,7 @@ exports.related = async (slug, query = {}, favSet = null) => {
 };
 
 // ── POST /wallpapers/:slug/download — track a download ───────────────────
-exports.trackDownload = async (slug, body = {}, userId = null) => {
+exports.trackDownload = async (slug, body = {}, userId = null, origin = '') => {
   const doc = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
   if (!doc) throw fail('Wallpaper not found', 404);
 
@@ -292,15 +315,66 @@ exports.trackDownload = async (slug, body = {}, userId = null) => {
     data: { downloadCount: { increment: 1 } },
   });
 
+  // Sign a short-lived token for the requested resolution and return a link to
+  // the file endpoint, which renders + serves the actual image.
+  const parsed = parseResolution(body.resolution);
+  const payload = parsed.original
+    ? { slug, original: true, p: 'dl' }
+    : { slug, w: parsed.w, h: parsed.h, p: 'dl' };
+  const token = jwt.sign(payload, DOWNLOAD_SECRET(), { expiresIn: '15m' });
+
+  const resolutionLabel = parsed.original
+    ? doc.width && doc.height
+      ? `${doc.width}x${doc.height}`
+      : 'original'
+    : `${parsed.w}x${parsed.h}`;
+
   return {
-    message: 'Download tracked',
+    message: 'Download ready',
     data: {
-      url: doc.originalUrl || doc.image,
+      url: `${origin}/api/v1/wallpapers/${encodeURIComponent(slug)}/file?dl=${token}`,
       downloadCount: doc.downloadCount + 1,
-      resolution: (body && body.resolution) || doc.preferredResolution || doc.resolution || null,
+      resolution: resolutionLabel,
     },
     statusCode: 200,
   };
+};
+
+// ── GET /wallpapers/:slug/file?dl=<token> — render + serve the download ────
+// Validates the signed token (premium gate already enforced when issued), then
+// renders the requested resolution (cached on disk) and returns the JPEG bytes.
+exports.getDownloadFile = async (slug, token) => {
+  if (!token) throw fail('Missing download token', 403);
+
+  let payload;
+  try {
+    payload = jwt.verify(token, DOWNLOAD_SECRET());
+  } catch {
+    throw fail('This download link has expired — please try again.', 403);
+  }
+  if (payload.p !== 'dl' || payload.slug !== slug) throw fail('Invalid download link', 403);
+
+  const doc = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
+  if (!doc) throw fail('Wallpaper not found', 404);
+
+  const width = payload.original ? null : payload.w;
+  const height = payload.original ? null : payload.h;
+  const label = width && height ? `${width}x${height}` : 'original';
+
+  // Cache key includes updatedAt so an admin image change invalidates old files.
+  const stamp = doc.updatedAt ? doc.updatedAt.getTime() : 0;
+  const cacheFile = path.join(CACHE_DIR, `${doc.id}_${label}_${stamp}.jpg`);
+
+  let buffer;
+  try {
+    buffer = await fs.promises.readFile(cacheFile); // cache hit → instant
+  } catch {
+    const source = await fetchSource(doc.originalUrl || doc.image);
+    buffer = await renderJpeg(source, width, height);
+    fs.promises.writeFile(cacheFile, buffer).catch(() => {}); // best-effort cache
+  }
+
+  return { buffer, filename: `halalwalls-${slug}-${label}.jpg`, contentType: 'image/jpeg' };
 };
 
 // ── GET /wallpapers/tags — popular tags across active wallpapers ─────────

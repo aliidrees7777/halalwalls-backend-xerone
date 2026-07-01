@@ -61,7 +61,16 @@ exports.createCheckoutSession = async (userId, planKey = 'monthly') => {
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw fail('User not found', 404);
-  if (user.isPremium) throw fail('You already have an active premium subscription', 409);
+  // Premium members may switch/upgrade plans. Block only redundant purchases:
+  // the exact same plan, or anything once lifetime is owned (nothing to upgrade).
+  if (user.isPremium) {
+    if (user.subscriptionPlan === 'lifetime') {
+      throw fail('You already have lifetime premium access', 409);
+    }
+    if (user.subscriptionPlan === planKey) {
+      throw fail('You are already on this plan', 409);
+    }
+  }
 
   const customerId = await ensureCustomer(user);
   const success = SUCCESS_URL();
@@ -143,37 +152,78 @@ async function syncFromSubscription(sub) {
   const userId = sub.metadata && sub.metadata.userId;
   const plan = (sub.metadata && sub.metadata.plan) || 'monthly';
   const where = userId ? { id: userId } : { stripeCustomerId: customerId };
+  const active = ACTIVE_STATES.includes(sub.status);
+
+  const user = await prisma.user.findFirst({ where });
+  if (!user) return;
+
+  // Lifetime is permanent — never let a leftover recurring-subscription event
+  // downgrade a lifetime member.
+  if (user.subscriptionPlan === 'lifetime') return;
+
+  // Ignore a cancellation/inactive event for a subscription that is no longer
+  // the user's current one (e.g. the old plan we replaced during an upgrade).
+  if (!active && user.stripeSubscriptionId && user.stripeSubscriptionId !== sub.id) return;
+
+  // On an upgrade/switch, the new active sub replaces a different old one —
+  // remember it so we can cancel it (after switching) to avoid double billing.
+  const oldSubToCancel =
+    active && user.stripeSubscriptionId && user.stripeSubscriptionId !== sub.id
+      ? user.stripeSubscriptionId
+      : null;
 
   // current_period_end moved under items in recent API versions — read defensively.
   const periodEnd =
     sub.current_period_end || (sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].current_period_end);
-  const active = ACTIVE_STATES.includes(sub.status);
 
-  await prisma.user.updateMany({
-    where,
+  await prisma.user.update({
+    where: { id: user.id },
     data: {
       stripeSubscriptionId: sub.id,
-      stripeCustomerId: customerId || undefined,
+      stripeCustomerId: customerId || user.stripeCustomerId || undefined,
       subscriptionStatus: sub.status,
       subscriptionPlan: plan,
       currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : null,
       isPremium: active,
     },
   });
+
+  // Cancel the replaced subscription AFTER switching, so its cancellation event
+  // is ignored by the guard above (current sub is now the new one).
+  if (oldSubToCancel) {
+    try {
+      await stripe.subscriptions.cancel(oldSubToCancel);
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
-// One-time (lifetime) payment — premium forever, no subscription or renewal.
+// One-time (lifetime) payment — premium forever. Cancels any existing recurring
+// subscription (lifetime supersedes it) and clears the subscription id.
 async function activateLifetime(where, customerId) {
+  const user = await prisma.user.findFirst({ where });
+  const oldSub = user && user.stripeSubscriptionId ? user.stripeSubscriptionId : null;
+
   await prisma.user.updateMany({
     where,
     data: {
       stripeCustomerId: customerId || undefined,
+      stripeSubscriptionId: null,
       subscriptionStatus: 'lifetime',
       subscriptionPlan: 'lifetime',
       currentPeriodEnd: null,
       isPremium: true,
     },
   });
+
+  if (oldSub) {
+    try {
+      await stripe.subscriptions.cancel(oldSub);
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 exports.handleWebhook = async (rawBody, signature) => {

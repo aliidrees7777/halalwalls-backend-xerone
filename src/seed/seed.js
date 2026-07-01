@@ -60,6 +60,27 @@ const RAW = [
   ['Blue Mosque at Dusk', 'islamic', '3840x2160', p('blue-mosque'), ['mosque', 'architecture']],
   ['Golden Calligraphy', 'islamic', '1920x1080', p('golden-calligraphy'), ['calligraphy', 'gold'], { isPremium: true }],
   ['Crescent Skyline', 'islamic', '2560x1440', p('crescent-skyline'), ['crescent', 'night'], { isLive: true }],
+
+  // ── Curated wallpapers (real image files served from the frontend /public) ──
+  // Relative paths resolve to whichever origin serves the site, so they work in
+  // both local (localhost:3661) and production (halalwalls.com).
+  ['Satoru Gojo: End Game', 'anime', '3840x2160', '/satoru-gojo-end-game-tf-2550x1435.jpg', ['gojo', 'jujutsu-kaisen', 'anime'], { isPremium: true }],
+  ['Itachi Uchiha', 'anime', '2560x1440', '/itachi-uchiha-the-villain-who-was-always-the-hero-no-2550x1435.jpg', ['naruto', 'itachi', 'anime']],
+  ['Goku Super Saiyan Blue', 'anime', '3840x2160', '/goku-super-saiyan-blue-against-all-gods-hv-2550x1435.jpg', ['dragon-ball', 'goku', 'anime'], { isLive: true }],
+  ['Shinrabansho', 'anime', '1920x1080', '/shinrabansho-man-a2-2550x1435.jpg', ['anime', 'art']],
+  ['Aesthetic Anime', 'anime', '3840x2160', '/beautiful-aesthetic-anime-background.jpg', ['anime', 'aesthetic']],
+  ['Novitec Lamborghini Revuelto', 'cars', '3840x2160', '/novitec-lamborghini-revuelto-exotic-carbon-machine-7t-2550x1435.jpg', ['lamborghini', 'supercar', 'carbon'], { isPremium: true }],
+  ['Spider-Man: Miles in Space', 'superheroes', '1920x1080', '/spiderman-miles-lost-in-space-4k-0f-2550x1435.jpg', ['spiderman', 'miles-morales', 'marvel']],
+  ['Miles Morales', 'superheroes', '2560x1440', '/miles-morales-sitting-alone-7k-2550x1435.jpg', ['spiderman', 'miles-morales', 'marvel']],
+  ['Batman: A Revolution', 'superheroes', '2560x1440', '/batman-is-not-a-replacement-he-is-a-revolution-4i-2550x1435.jpg', ['batman', 'dc', 'gotham']],
+  ['Darth Vader: A Legend', 'movies', '2560x1440', '/darth-vader-became-a-legend-dn-2550x1435.jpg', ['star-wars', 'darth-vader', 'cinematic'], { isPremium: true }],
+  ['V for Vendetta', 'movies', '1920x1080', '/v-for-vendetta-2026-uz-2550x1435.jpg', ['movie', 'cinematic']],
+  ['GTA 6: The Next Chapter', 'gaming', '3840x2160', '/gta-6-the-next-chapter-begins-rg-2550x1435.jpg', ['gta', 'gaming', 'rockstar'], { isLive: true }],
+  ['PlayStation', 'gaming', '2560x1440', '/playstation-logo-5k-wq-2550x1435.jpg', ['playstation', 'gaming']],
+  ['Shulk — Xenoblade', 'gaming', '1920x1080', '/shulk-xenoblade-t4-2550x1435.jpg', ['xenoblade', 'gaming']],
+  ['Nordland, Norway', 'minimalist', '3840x2160', '/nordland-norway-lk-2550x1435.jpg', ['landscape', 'norway', 'nature']],
+  ['Small Memory', 'minimalist', '1920x1080', '/small-memory-lp.jpg', ['aesthetic', 'calm']],
+  ['Ethereal Vibes', 'minimalist', '2560x1440', '/hf_20260326_164049_8974aeb1-5fda-4ce2-a53e-8ef40197514c.jpeg', ['abstract', 'aesthetic']],
 ];
 
 const slugify = (s) =>

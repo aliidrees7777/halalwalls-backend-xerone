@@ -135,6 +135,13 @@ exports.login = async ({ email, password, role }) => {
   const match = await bcrypt.compare(password, user.password || '');
   if (!match) throw fail('Invalid email or password', 401);
 
+  // Soft-deleted account — block sign-in, but tell the (authenticated) owner so
+  // the UI can offer reactivation. Checked after the password so we never reveal
+  // an account's deactivated state to someone without its credentials.
+  if (user.isDeleted) {
+    throw fail('Your account is deactivated. Reactivate it to sign in.', 403);
+  }
+
   // If a role was requested (portal tab), it must match the account's role.
   if (role && user.role !== role) {
     throw fail(`This account is not a ${role} account`, 403);
@@ -144,6 +151,38 @@ exports.login = async ({ email, password, role }) => {
   return {
     message: 'Logged in successfully',
     data: { token, user: serializeUser(user) },
+    statusCode: 200,
+  };
+};
+
+// ─── Reactivate a soft-deleted account ────────────────────────────────────
+// Validates credentials, then clears the soft-delete flags and logs the user in.
+exports.reactivate = async ({ email, password }) => {
+  const normalizedEmail = email.toLowerCase().trim();
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    include: WITH_FAVORITES,
+  });
+  if (!user) throw fail('Invalid email or password', 401);
+
+  if (user.authProvider === 'google' && !user.password) {
+    throw fail('This account uses Google sign-in. Please continue with Google.', 409);
+  }
+  const match = await bcrypt.compare(password, user.password || '');
+  if (!match) throw fail('Invalid email or password', 401);
+
+  const target = user.isDeleted
+    ? await prisma.user.update({
+        where: { id: user.id },
+        data: { isDeleted: false, deletedAt: null },
+        include: WITH_FAVORITES,
+      })
+    : user;
+
+  const token = signAccessToken(target);
+  return {
+    message: user.isDeleted ? 'Account reactivated' : 'Account is already active',
+    data: { token, user: serializeUser(target) },
     statusCode: 200,
   };
 };

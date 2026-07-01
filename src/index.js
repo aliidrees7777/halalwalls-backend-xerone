@@ -10,6 +10,10 @@ const { requestLogger, successHandler, errorHandler } = require('./helpers/respo
 const SERVICE = 'halalwalls-backend';
 const app = express();
 
+// Behind nginx on the VPS — trust the proxy so req.protocol / req.get('host')
+// reflect the real public URL (used to build upload + download file links).
+app.set('trust proxy', true);
+
 // ── CORS — allow API calls from any origin (browser, mobile, tools) ──
 // Wide-open by design. `origin: true` reflects whatever Origin the browser
 // sends back in Access-Control-Allow-Origin, which (unlike a literal '*')

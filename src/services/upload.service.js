@@ -4,8 +4,7 @@
 // behind upload-storage.js, so the Hostinger VPS / object-storage swap later
 // touches only that helper, not this service.
 const prisma = require('../lib/prisma');
-const { saveImage, removeImage } = require('../helpers/upload-storage');
-const { readImageSize } = require('../helpers/imageMeta');
+const { processImage, removeImages } = require('../helpers/image-pipeline');
 const { serializeCard } = require('./wallpaper.service');
 
 // Standard download set carried on every wallpaper (matches the seed data).
@@ -52,9 +51,11 @@ function parseTags(input) {
 //   body   — { category | categorySlug, tags, source | description, title?, author? }
 //   origin — absolute base URL (e.g. http://localhost:3662) for the public image URL
 exports.createUpload = async (userId, file, body = {}, origin = '') => {
-  // 1. Persist the image to storage and build its public URL.
-  const stored = await saveImage(file.buffer, file.mimetype);
-  const url = `${origin}${stored.path}`;
+  // 1. Run the Sharp pipeline (optimized WebP + thumbnail on disk); build the
+  //    public absolute URLs from the request origin.
+  const processed = await processImage(file.buffer);
+  const imageUrl = `${origin}${processed.image}`;
+  const thumbUrl = `${origin}${processed.thumbnail}`;
 
   try {
     // 2. Resolve category — accept a slug or a display label; fill the missing
@@ -78,16 +79,13 @@ exports.createUpload = async (userId, file, body = {}, origin = '') => {
     const title =
       (body.title && String(body.title).trim()) || fileBase || categoryLabel || 'Untitled wallpaper';
 
-    // 4. Native dimensions read straight from the image bytes (resolution stays
-    //    "" / null when the header can't be parsed — never guessed).
-    const dims = readImageSize(file.buffer);
-    const width = dims ? dims.width : null;
-    const height = dims ? dims.height : null;
-    const resolution = dims ? `${dims.width}x${dims.height}` : '';
+    // 4. Real dimensions come from the Sharp pipeline (after any 4K downscale).
+    const width = processed.width;
+    const height = processed.height;
+    const resolution = width && height ? `${width}x${height}` : '';
 
-    // 5. Size from the actual uploaded byte length.
-    const bytes = file.size || (file.buffer ? file.buffer.length : 0);
-    const sizeMB = Math.round((bytes / (1024 * 1024)) * 100) / 100;
+    // 5. Size = the optimized WebP byte length.
+    const sizeMB = Math.round((processed.bytes / (1024 * 1024)) * 100) / 100;
 
     const description = String(body.description || body.source || '').trim();
 
@@ -103,9 +101,9 @@ exports.createUpload = async (userId, file, body = {}, origin = '') => {
         category: categoryLabel,
         categorySlug,
         tags: parseTags(body.tags),
-        image: url,
-        originalUrl: url,
-        thumbnailUrl: url,
+        image: imageUrl,
+        originalUrl: imageUrl,
+        thumbnailUrl: thumbUrl,
         resolution,
         preferredResolution: resolution,
         resolutions: STANDARD_RESOLUTIONS,
@@ -128,8 +126,8 @@ exports.createUpload = async (userId, file, body = {}, origin = '') => {
       statusCode: 201,
     };
   } catch (err) {
-    // Roll back the stored image so a failed DB write doesn't orphan a file.
-    await removeImage(stored.filename).catch(() => {});
+    // Roll back the generated files so a failed DB write doesn't orphan them.
+    await removeImages(processed.filenames).catch(() => {});
     throw err;
   }
 };

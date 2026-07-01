@@ -48,11 +48,36 @@ exports.related = async (req, res, next) => {
 };
 
 // POST /api/v1/wallpapers/:slug/download
-// Track a download (increments downloadCount) and return the asset URL.
+// Track a download (increments downloadCount) and return a signed file link.
 exports.trackDownload = async (req, res, next) => {
   try {
-    const response = await WallpaperService.trackDownload(req.params.slug, req.body || {}, req.user && req.user.id);
+    const origin = process.env.BACKEND_PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+    const response = await WallpaperService.trackDownload(
+      req.params.slug,
+      req.body || {},
+      req.user && req.user.id,
+      origin,
+    );
     res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// GET /api/v1/wallpapers/:slug/file?dl=<token>
+// Renders + serves the wallpaper at the requested resolution as a download.
+// Public but token-gated (the token is issued only after the premium gate).
+exports.downloadFile = async (req, res, next) => {
+  try {
+    const { buffer, filename, contentType } = await WallpaperService.getDownloadFile(
+      req.params.slug,
+      req.query.dl,
+    );
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.status(200).send(buffer);
   } catch (error) {
     next(error);
   }

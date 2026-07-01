@@ -20,8 +20,14 @@ router.get('/:slug', WallpaperController.getBySlug);
 // Wallpapers related to the given slug (same category, backfilled by latest).
 router.get('/:slug/related', WallpaperController.related);
 
+// Render + serve the actual download file at a requested resolution. Public but
+// token-gated: the ?dl= token is issued by POST /download only after the premium
+// gate passes (window.open downloads can't carry an auth header).
+router.get('/:slug/file', WallpaperController.downloadFile);
+
 // ── Auth-only ──
-// Download requires sign-in. Increments the counter and returns the asset URL.
+// Start a download: enforce the premium gate, increment the counter, and return
+// a signed link to the file endpoint above.
 router.post('/:slug/download', authorize(['user', 'admin']), WallpaperController.trackDownload);
 
 module.exports = router;

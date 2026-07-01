@@ -48,6 +48,20 @@ exports.login = async (req, res, next) => {
   }
 };
 
+// POST /api/v1/auth/reactivate — restore a soft-deleted account + sign in.
+exports.reactivate = async (req, res, next) => {
+  const { email, password } = req.body || {};
+  try {
+    if (!email || typeof email !== 'string' || !EMAIL_RE.test(email.trim())) return bad(next, 'A valid email is required');
+    if (!password || typeof password !== 'string') return bad(next, 'Password is required');
+
+    const response = await AuthService.reactivate({ email, password });
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // POST /api/v1/auth/forgot-password
 exports.forgotPassword = async (req, res, next) => {
   const { email } = req.body || {};
