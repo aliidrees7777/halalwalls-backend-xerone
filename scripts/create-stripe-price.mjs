@@ -1,6 +1,9 @@
 // One-time: create (or reuse) the HalalWalls Premium prices — monthly, yearly,
 // and lifetime. Run: node scripts/create-stripe-price.mjs → prints each Price ID.
-import 'dotenv/config';
+import dotenv from 'dotenv';
+// Local dev tool: load the local env (falls back to a plain .env).
+import fs from 'fs';
+dotenv.config({ path: fs.existsSync('.env.local') ? '.env.local' : '.env' });
 import Stripe from 'stripe';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);

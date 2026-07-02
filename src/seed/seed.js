@@ -9,7 +9,7 @@
  *   categories: islamic, anime, superheroes, minimalist, gaming, movies, cars, sport, space
  *   browse:     latest (createdAt), popular (downloadCount), random, live (isLive)
  */
-require('dotenv').config();
+require('../config/loadEnv'); // loads .env.local (dev) or .env.production (prod)
 const prisma = require('../lib/prisma');
 
 // ── categories (slugs match the frontend FilterId union) ──

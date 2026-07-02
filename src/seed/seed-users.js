@@ -7,7 +7,7 @@
  * sign in immediately after the Postgres migration. Idempotent (upsert by
  * email). Demo passwords are intentionally simple — rotate before production.
  */
-require('dotenv').config();
+require('../config/loadEnv'); // loads .env.local (dev) or .env.production (prod)
 const bcrypt = require('bcryptjs');
 const prisma = require('../lib/prisma');
 

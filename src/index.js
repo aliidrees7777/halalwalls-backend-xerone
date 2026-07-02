@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('./config/loadEnv'); // loads .env.local (dev) or .env.production (prod)
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
