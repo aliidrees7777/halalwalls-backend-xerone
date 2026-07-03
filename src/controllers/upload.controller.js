@@ -17,8 +17,12 @@ exports.createUpload = async (req, res, next) => {
     }
 
     // Absolute base URL for the stored image (e.g. http://localhost:3662).
-    const origin = `${req.protocol}://${req.get('host')}`;
-    const response = await UploadService.createUpload(req.user.id, req.file, req.body, origin);
+    const origin = process.env.BACKEND_PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+    // Admins publish immediately (active, may set premium/live); users → pending.
+    const isAdmin = req.user && req.user.role === 'admin';
+    const response = await UploadService.createUpload(req.user.id, req.file, req.body, origin, {
+      admin: isAdmin,
+    });
     res.sendSuccess(response.message, response.data, response.statusCode);
   } catch (error) {
     next(error);

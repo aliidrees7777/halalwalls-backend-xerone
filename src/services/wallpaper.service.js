@@ -329,6 +329,22 @@ exports.trackDownload = async (slug, body = {}, userId = null, origin = '') => {
       : 'original'
     : `${parsed.w}x${parsed.h}`;
 
+  // Log a timestamped download event — powers the dashboard's downloads-per-day
+  // trend + date filters. Best-effort: a logging failure must never break the
+  // download itself (the counter is already incremented above).
+  try {
+    await prisma.downloadEvent.create({
+      data: {
+        wallpaperId: doc.id,
+        userId: userId || null,
+        resolution: resolutionLabel,
+        isPremium: doc.isPremium,
+      },
+    });
+  } catch {
+    /* ignore — download already succeeded */
+  }
+
   return {
     message: 'Download ready',
     data: {
@@ -382,18 +398,26 @@ exports.getDownloadFile = async (slug, token) => {
 // Postgres `unnest` expands the tags[] array so we can group + count per tag.
 exports.listTags = async (query = {}) => {
   const limit = Math.min(60, Math.max(1, parseInt(query.limit, 10) || 24));
-  const rows = await prisma.$queryRaw`
-    SELECT t AS tag, count(*)::int AS count
-    FROM hw_wallpapers w, unnest(w.tags) AS t
-    WHERE w.status = 'active'
-    GROUP BY t
-    ORDER BY count DESC, t ASC
-    LIMIT ${limit}`;
-  return {
-    message: 'Tags fetched',
-    data: { tags: rows.map((r) => ({ tag: r.tag, count: Number(r.count) })) },
-    statusCode: 200,
-  };
+  // Union tags actually used on wallpapers with admin-created active tags, so
+  // tags added in the admin panel also surface on the user side.
+  const [used, managed] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT t AS tag, count(*)::int AS count
+      FROM hw_wallpapers w, unnest(w.tags) AS t
+      WHERE w.status = 'active'
+      GROUP BY t`,
+    prisma.tag.findMany({ where: { isActive: true }, select: { name: true } }),
+  ]);
+  const map = new Map();
+  used.forEach((r) => map.set(String(r.tag).toLowerCase(), { tag: r.tag, count: Number(r.count) }));
+  managed.forEach((t) => {
+    const k = t.name.toLowerCase();
+    if (!map.has(k)) map.set(k, { tag: t.name, count: 0 });
+  });
+  const tags = [...map.values()]
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+    .slice(0, limit);
+  return { message: 'Tags fetched', data: { tags }, statusCode: 200 };
 };
 
 exports.DOWNLOAD_RESOLUTIONS = DOWNLOAD_RESOLUTIONS;

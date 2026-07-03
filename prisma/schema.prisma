@@ -78,6 +78,7 @@ model Category {
   image       String?
   order       Int      @default(0)
   isPremium   Boolean  @default(false)
+  isActive    Boolean  @default(true) // admin toggle: hidden from nav/upload when false
   count       Int      @default(0) // cached; live count computed in the API
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -136,6 +137,74 @@ model Favorite {
   @@unique([userId, wallpaperId])
   @@index([userId])
   @@map("hw_favorites")
+}
+
+// Admin-managed roles + their permission grants (management layer). The API's
+// runtime guard still uses User.role (user/admin); this drives the Roles &
+// Permissions admin UI.
+model AdminRole {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
+  key         String   @unique
+  description String   @default("")
+  permissions String[] @default([])
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("hw_roles")
+}
+
+// Admin-managed tag metadata (description / active toggle). The actual tags on
+// wallpapers live in Wallpaper.tags[]; the admin Tags page unions these rows
+// with the tags users apply, so user-created tags surface automatically.
+model Tag {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
+  slug        String   @unique
+  description String   @default("")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("hw_tags")
+}
+
+// Admin-managed resolution catalog. Drives the public "browse by resolution"
+// nav + the download-size options, and the admin Resolutions page. Usage
+// (wallpapers/downloads) is derived from Wallpaper.resolution + DownloadEvent.
+model Resolution {
+  id          String   @id @default(uuid()) @db.Uuid
+  label       String   @unique // display, e.g. "3840×2160"
+  width       Int
+  height      Int
+  aspectRatio String   @default("")
+  device      String   @default("desktop") // desktop | mobile
+  fileSizeMB  Float    @default(0)
+  isActive    Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([width, height])
+  @@map("hw_resolutions")
+}
+
+// One row per wallpaper download — the timestamped log behind the dashboard's
+// "downloads per day" trend and date filters. Wallpaper.downloadCount stays as
+// the cumulative counter; this table adds the time dimension. Stored as plain
+// ids (no relations) so a deleted user/wallpaper never removes historical stats.
+model DownloadEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  wallpaperId String   @db.Uuid
+  userId      String?  @db.Uuid
+  resolution  String?
+  isPremium   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([wallpaperId])
+  @@map("hw_download_events")
 }
 
 model Contact {

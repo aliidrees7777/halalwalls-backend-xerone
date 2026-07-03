@@ -129,7 +129,7 @@ exports.login = async ({ email, password, role }) => {
   if (!user) throw fail('Invalid email or password', 401);
 
   if (user.authProvider === 'google' && !user.password) {
-    throw fail('This account uses Google sign-in. Please continue with Google.', 409);
+    throw fail('This email is already registered with Google sign-in. Please continue with Google.', 409);
   }
 
   const match = await bcrypt.compare(password, user.password || '');
@@ -166,7 +166,7 @@ exports.reactivate = async ({ email, password }) => {
   if (!user) throw fail('Invalid email or password', 401);
 
   if (user.authProvider === 'google' && !user.password) {
-    throw fail('This account uses Google sign-in. Please continue with Google.', 409);
+    throw fail('This email is already registered with Google sign-in. Please continue with Google.', 409);
   }
   const match = await bcrypt.compare(password, user.password || '');
   if (!match) throw fail('Invalid email or password', 401);

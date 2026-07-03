@@ -50,7 +50,7 @@ function parseTags(input) {
 //   file   — multer file (memory storage: { buffer, mimetype, size, originalname })
 //   body   — { category | categorySlug, tags, source | description, title?, author? }
 //   origin — absolute base URL (e.g. http://localhost:3662) for the public image URL
-exports.createUpload = async (userId, file, body = {}, origin = '') => {
+exports.createUpload = async (userId, file, body = {}, origin = '', options = {}) => {
   // 1. Run the Sharp pipeline (optimized WebP + thumbnail on disk); build the
   //    public absolute URLs from the request origin.
   const processed = await processImage(file.buffer);
@@ -91,8 +91,14 @@ exports.createUpload = async (userId, file, body = {}, origin = '') => {
 
     const slug = await uniqueSlug(slugify(title));
 
-    // 6. Create the pending row. User submissions are never premium/live and are
-    //    held at status 'pending' until an admin approves them.
+    // 6. Admin uploads publish immediately (active) and may set premium/live;
+    //    user submissions are held at 'pending' and are never premium/live.
+    const isAdmin = options.admin === true;
+    const status = options.status || (isAdmin ? 'active' : 'pending');
+    const asBool = (v) => v === true || v === 'true' || v === '1';
+    const isPremium = isAdmin ? asBool(body.isPremium) : false;
+    const isLive = isAdmin ? asBool(body.isLive) : false;
+
     const created = await prisma.wallpaper.create({
       data: {
         title,
@@ -111,17 +117,15 @@ exports.createUpload = async (userId, file, body = {}, origin = '') => {
         width,
         height,
         author: body.author ? String(body.author).trim() : 'HalalWalls',
-        isPremium: false,
-        isLive: false,
-        status: 'pending',
+        isPremium,
+        isLive,
+        status,
         uploadedById: userId,
       },
     });
 
-    // The submitter should see it's awaiting review, so carry the status on the
-    // card (same shape as GET /me/uploads).
     return {
-      message: 'Wallpaper submitted for review',
+      message: isAdmin ? 'Wallpaper published' : 'Wallpaper submitted for review',
       data: { wallpaper: { ...serializeCard(created), status: created.status } },
       statusCode: 201,
     };

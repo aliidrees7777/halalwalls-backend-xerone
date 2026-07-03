@@ -798,6 +798,134 @@ module.exports = {
         },
       },
     },
+    '/api/v1/admin/analytics': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Dashboard analytics — cards, trend, subscriptions, activity (admin)',
+        description:
+          'Real, live metrics for the admin Dashboard home: headline cards (total wallpapers, total users, premium users, total downloads, estimated revenue), the premium subscription-plan breakdown, a recent-activity feed and a downloads-per-day trend series. "Users" counts end-users only (role=user, not deactivated) — admins are excluded. Revenue is estimated from the premium-plan mix (monthly $2.99 / yearly $9.99 / lifetime $29.99). The trend is real downloads/day from the download-events log over the selected range. Admin only.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'range',
+            in: 'query',
+            required: false,
+            description: 'Trend window for the downloads chart.',
+            schema: { type: 'string', enum: ['7d', '14d', '30d', 'month'], default: '14d' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Dashboard analytics',
+            content: jsonOk(
+              'Dashboard analytics',
+              {
+                cards: { totalWallpapers: 41, totalUsers: 8, premiumUsers: 1, totalDownloads: 114090, totalRevenue: 2.99 },
+                thisMonth: { wallpapers: 2, users: 5 },
+                subscriptions: {
+                  total: 1,
+                  revenue: 2.99,
+                  breakdown: [
+                    { plan: 'monthly', count: 1, percent: 100 },
+                    { plan: 'yearly', count: 0, percent: 0 },
+                    { plan: 'lifetime', count: 0, percent: 0 },
+                  ],
+                },
+                trend: {
+                  label: 'Downloads per day',
+                  range: '14d',
+                  rangeLabel: 'Last 14 days',
+                  total: 128,
+                  options: [
+                    { key: '7d', label: 'Last 7 days' },
+                    { key: '14d', label: 'Last 14 days' },
+                    { key: '30d', label: 'Last 30 days' },
+                    { key: 'month', label: 'This month' },
+                  ],
+                  series: [
+                    { date: '2026-07-01', value: 12 },
+                    { date: '2026-07-02', value: 9 },
+                    { date: '2026-07-03', value: 20 },
+                  ],
+                },
+                topCategories: [{ name: 'Anime', count: 8 }, { name: 'Gaming', count: 6 }],
+                recentActivity: [
+                  { type: 'wallpaper_uploaded', title: 'New wallpaper uploaded', subtitle: 'GTA 6 — The Next Chapter', at: '2026-07-02T13:30:08.852Z' },
+                  { type: 'user', title: 'New user registered', subtitle: 'john.doe@email.com', at: '2026-07-02T10:12:00.000Z' },
+                ],
+              },
+              'GET',
+              '/api/v1/admin/analytics'
+            ),
+          },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/analytics') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/analytics') },
+        },
+      },
+    },
+    '/api/v1/admin/activity': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Paginated recent-activity feed (admin)',
+        description:
+          'A merged, newest-first feed of recent wallpapers (uploads/approvals) and end-user registrations/subscriptions — powers the dashboard "Recent Activity" panel and its "View all" page. There is no dedicated audit-log table, so the feed reaches back over the most recent ~100 of each source. Admin only.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'page', in: 'query', required: false, schema: { type: 'integer', default: 1 } },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 15, maximum: 50 } },
+        ],
+        responses: {
+          200: {
+            description: 'Activity feed',
+            content: jsonOk(
+              'Activity feed',
+              {
+                activity: [
+                  { type: 'wallpaper_approved', title: 'Wallpaper approved', subtitle: 'Neon Metropolis', slug: 'neon-metropolis', at: '2026-07-03T09:10:00.000Z' },
+                  { type: 'user', title: 'New user registered', subtitle: 'john.doe@email.com', at: '2026-07-03T08:00:00.000Z' },
+                  { type: 'subscription', title: 'New subscription', subtitle: 'monthly — sara@email.com', at: '2026-07-02T20:00:00.000Z' },
+                ],
+                pagination: { total: 50, page: 1, limit: 15, totalPages: 4, hasNextPage: true, hasPrevPage: false },
+              },
+              'GET',
+              '/api/v1/admin/activity'
+            ),
+          },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/activity') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/activity') },
+        },
+      },
+    },
+    '/api/v1/admin/storage': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Media storage usage (admin)',
+        description:
+          'Real storage footprint of the wallpaper media: `usedBytes` is the on-disk size of the backend /uploads directory (originals + thumbnails + render cache); `quotaBytes` is the hosting plan allowance (set via the STORAGE_QUOTA_GB env). `disk` carries the actual partition total/free when the OS supports it. Result is cached ~60s. Admin only.',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Storage usage',
+            content: jsonOk(
+              'Storage usage',
+              {
+                usedBytes: 275666951,
+                quotaBytes: 107374182400,
+                quotaGB: 100,
+                remainingBytes: 107098515449,
+                percent: 0.3,
+                fileCount: 128,
+                disk: { totalBytes: 512110190592, freeBytes: 381243875328 },
+              },
+              'GET',
+              '/api/v1/admin/storage'
+            ),
+          },
+          401: { description: 'Not authenticated', content: jsonErr(401, 'Authentication required', 'GET', '/api/v1/admin/storage') },
+          403: { description: 'Not an admin', content: jsonErr(403, 'You do not have permission to access this resource', 'GET', '/api/v1/admin/storage') },
+        },
+      },
+    },
     '/api/v1/admin/contacts': {
       get: {
         tags: ['Admin'],

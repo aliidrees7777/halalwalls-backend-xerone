@@ -20,6 +20,7 @@ const serialize = (c, count) => ({
   description: c.description || '',
   image: c.image || null,
   isPremium: !!c.isPremium,
+  isActive: c.isActive !== false,
   order: c.order || 0,
   count: typeof count === 'number' ? count : c.count || 0,
 });
@@ -37,10 +38,11 @@ const liveCounts = async () => {
   }, {});
 };
 
-// ── GET /categories — all categories with live wallpaper counts ──────────
+// ── GET /categories — active categories with live wallpaper counts ───────
+// Public surface (nav, upload form): only active categories are returned.
 exports.listAll = async () => {
   const [cats, counts] = await Promise.all([
-    prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }] }),
+    prisma.category.findMany({ where: { isActive: true }, orderBy: [{ order: 'asc' }, { name: 'asc' }] }),
     liveCounts(),
   ]);
   return {
@@ -77,6 +79,7 @@ exports.create = async (body = {}) => {
       image: image || null,
       order: Number.isFinite(+order) ? +order : 0,
       isPremium: !!isPremium,
+      isActive: body.isActive === undefined ? true : !!body.isActive,
     },
   });
   return { message: 'Category created', data: { category: serialize(cat, 0) }, statusCode: 201 };
@@ -85,10 +88,11 @@ exports.create = async (body = {}) => {
 // ── PATCH /categories/:slug — update (admin) ─────────────────────────────
 exports.update = async (slug, body = {}) => {
   const update = {};
-  ['name', 'description', 'image', 'order', 'isPremium'].forEach((k) => {
+  ['name', 'description', 'image', 'order', 'isPremium', 'isActive'].forEach((k) => {
     if (body[k] !== undefined) {
       if (k === 'order') update.order = Number.isFinite(+body.order) ? +body.order : 0;
       else if (k === 'isPremium') update.isPremium = !!body.isPremium;
+      else if (k === 'isActive') update.isActive = !!body.isActive;
       else update[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
     }
   });

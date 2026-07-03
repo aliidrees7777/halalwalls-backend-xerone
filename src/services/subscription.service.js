@@ -72,22 +72,34 @@ exports.createCheckoutSession = async (userId, planKey = 'monthly') => {
     }
   }
 
-  const customerId = await ensureCustomer(user);
-  const success = SUCCESS_URL();
-  const params = {
-    mode: plan.mode,
-    customer: customerId,
-    line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${success}${success.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: CANCEL_URL(),
-    metadata: { userId: user.id, plan: planKey },
-  };
-  // Recurring plans carry the metadata onto the Subscription too, so webhooks
-  // for renewals/cancellations can find the user and plan.
-  if (plan.mode === 'subscription') {
-    params.subscription_data = { metadata: { userId: user.id, plan: planKey } };
+  let session;
+  try {
+    const customerId = await ensureCustomer(user);
+    const success = SUCCESS_URL();
+    const params = {
+      mode: plan.mode,
+      customer: customerId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${success}${success.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: CANCEL_URL(),
+      metadata: { userId: user.id, plan: planKey },
+    };
+    // Recurring plans carry the metadata onto the Subscription too, so webhooks
+    // for renewals/cancellations can find the user and plan.
+    if (plan.mode === 'subscription') {
+      params.subscription_data = { metadata: { userId: user.id, plan: planKey } };
+    }
+    session = await stripe.checkout.sessions.create(params);
+  } catch (err) {
+    // Surface Stripe/SDK failures (e.g. wrong key, "No such price/customer" from
+    // an account mismatch) with a clear message + server log, instead of an
+    // opaque 500 that hides the cause on production.
+    if (!err || !String(err.type || '').startsWith('Stripe')) throw err;
+    const detail = (err.raw && err.raw.message) || err.message || 'unknown payment error';
+    // eslint-disable-next-line no-console
+    console.error(`[stripe:checkout] ${err.type} ${err.code || ''} — ${detail}`);
+    throw fail(`Payment could not be started: ${detail}`, 502);
   }
-  const session = await stripe.checkout.sessions.create(params);
 
   return { message: 'Checkout session created', data: { url: session.url, id: session.id }, statusCode: 200 };
 };

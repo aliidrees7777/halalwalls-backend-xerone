@@ -84,6 +84,9 @@ const serializeAdminUser = (u) => ({
   authProvider: u.authProvider,
   emailVerified: u.emailVerified,
   isPremium: u.isPremium,
+  subscriptionPlan: u.subscriptionPlan || null,
+  isDeleted: !!u.isDeleted,
+  status: u.isDeleted ? 'deactivated' : 'active',
   avatar: u.avatar,
   banner: u.banner,
   bio: u.bio,
@@ -129,6 +132,7 @@ exports.getOverview = async () => {
     contactStatusGroups,
     wpAgg,
     favoritesTotal,
+    downloadTotal,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { role: 'admin' } }),
@@ -139,8 +143,9 @@ exports.getOverview = async () => {
     prisma.wallpaper.count({ where: { isPremium: true } }),
     prisma.category.count(),
     prisma.contact.groupBy({ by: ['status'], _count: { _all: true } }),
-    prisma.wallpaper.aggregate({ _sum: { downloadCount: true, views: true } }),
+    prisma.wallpaper.aggregate({ _sum: { views: true } }),
     prisma.favorite.count(),
+    prisma.downloadEvent.count(), // real downloads (the per-download log)
   ]);
 
   const wpByStatus = { active: 0, pending: 0, hidden: 0 };
@@ -178,7 +183,7 @@ exports.getOverview = async () => {
         resolved: cByStatus.resolved,
       },
       engagement: {
-        totalDownloads: wpAgg._sum.downloadCount || 0,
+        totalDownloads: downloadTotal,
         totalViews: wpAgg._sum.views || 0,
         totalFavorites: favoritesTotal,
       },
@@ -201,6 +206,7 @@ exports.listWallpapers = async (query = {}) => {
     where.status = query.status;
   }
   if (query.category) where.categorySlug = slugify(query.category);
+  if (query.resolution) where.resolution = String(query.resolution).trim();
   const prem = toBool(query.isPremium);
   if (prem !== undefined) where.isPremium = prem;
   const live = toBool(query.isLive);
@@ -209,6 +215,8 @@ exports.listWallpapers = async (query = {}) => {
   const q = String(query.q || '').trim();
   if (q) {
     where.OR = [
+      { uploadedBy: { is: { email: { contains: q, mode: 'insensitive' } } } },
+      { uploadedBy: { is: { firstName: { contains: q, mode: 'insensitive' } } } },
       { title: { contains: q, mode: 'insensitive' } },
       { categorySlug: { contains: q, mode: 'insensitive' } },
       { category: { contains: q, mode: 'insensitive' } },
@@ -226,6 +234,198 @@ exports.listWallpapers = async (query = {}) => {
   return {
     message: 'Wallpapers fetched',
     data: { wallpapers: rows.map(serializeAdminWallpaper), pagination: buildMeta(total, page, limit) },
+    statusCode: 200,
+  };
+};
+
+// GET /admin/wallpapers/stats — headline cards + filter options for the page.
+exports.getWallpaperStats = async () => {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthWhere = { createdAt: { gte: startOfMonth } };
+
+  const [statusGroups, dlTotal, statusGroupsMonth, dlMonth, resolutionGroups, categories] =
+    await Promise.all([
+      prisma.wallpaper.groupBy({ by: ['status'], _count: { _all: true } }),
+      prisma.downloadEvent.count(), // real all-time downloads (per-download log)
+      prisma.wallpaper.groupBy({ by: ['status'], where: monthWhere, _count: { _all: true } }),
+      prisma.downloadEvent.count({ where: monthWhere }),
+      prisma.wallpaper.groupBy({ by: ['resolution'], _count: { _all: true } }),
+      prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }], select: { name: true, slug: true } }),
+    ]);
+
+  const byStatus = (groups) => {
+    const m = { active: 0, pending: 0, hidden: 0 };
+    groups.forEach((g) => { if (m[g.status] !== undefined) m[g.status] = g._count._all; });
+    return m;
+  };
+  const all = byStatus(statusGroups);
+  const month = byStatus(statusGroupsMonth);
+  const total = all.active + all.pending + all.hidden;
+  const totalMonth = month.active + month.pending + month.hidden;
+
+  const resolutions = resolutionGroups
+    .filter((r) => r.resolution)
+    .sort((a, b) => b._count._all - a._count._all)
+    .map((r) => ({ label: r.resolution, value: r.resolution }));
+
+  return {
+    message: 'Wallpaper stats',
+    data: {
+      total,
+      approved: all.active,
+      pending: all.pending,
+      rejected: all.hidden,
+      downloads: dlTotal,
+      thisMonth: {
+        total: totalMonth,
+        approved: month.active,
+        pending: month.pending,
+        rejected: month.hidden,
+        downloads: dlMonth,
+      },
+      filters: {
+        categories: categories.map((c) => ({ label: c.name, value: c.slug })),
+        resolutions,
+      },
+    },
+    statusCode: 200,
+  };
+};
+
+// GET /admin/wallpapers/export — CSV of wallpapers, respecting the same filters.
+exports.exportWallpapersCsv = async (query = {}) => {
+  const where = {};
+  if (query.status && WALLPAPER_STATUSES.includes(query.status)) where.status = query.status;
+  if (query.category) where.categorySlug = slugify(query.category);
+  if (query.resolution) where.resolution = String(query.resolution).trim();
+  const q = String(query.q || '').trim();
+  if (q) {
+    where.OR = [
+      { title: { contains: q, mode: 'insensitive' } },
+      { category: { contains: q, mode: 'insensitive' } },
+      { tags: { has: q } },
+      { uploadedBy: { is: { email: { contains: q, mode: 'insensitive' } } } },
+    ];
+  }
+
+  const rows = await prisma.wallpaper.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 5000,
+    include: { uploadedBy: UPLOADER_SELECT },
+  });
+
+  const headers = ['Title', 'Category', 'Resolution', 'Status', 'Downloads', 'Views', 'Premium', 'Uploader', 'Uploader Email', 'Uploaded At'];
+  const esc = (v) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.join(',')];
+  rows.forEach((w) => {
+    lines.push([
+      w.title,
+      w.category || '',
+      w.resolution || '',
+      w.status === 'active' ? 'Approved' : w.status === 'hidden' ? 'Rejected' : 'Pending',
+      w.downloadCount,
+      w.views,
+      w.isPremium ? 'Yes' : 'No',
+      w.uploadedBy ? `${w.uploadedBy.firstName || ''} ${w.uploadedBy.lastName || ''}`.trim() : 'HalalWalls',
+      w.uploadedBy ? w.uploadedBy.email : '',
+      new Date(w.createdAt).toISOString(),
+    ].map(esc).join(','));
+  });
+  return { csv: lines.join('\n'), count: rows.length };
+};
+
+// ───────────────────────── Category management ─────────────────────────
+// Per-category live wallpaper count + download total (active wallpapers only).
+async function categoryUsage() {
+  const groups = await prisma.wallpaper.groupBy({
+    by: ['categorySlug'],
+    where: { status: 'active' },
+    _count: { _all: true },
+    _sum: { downloadCount: true },
+  });
+  const bySlug = {};
+  groups.forEach((g) => {
+    if (g.categorySlug) bySlug[g.categorySlug] = { count: g._count._all, downloads: g._sum.downloadCount || 0 };
+  });
+  return bySlug;
+}
+
+// GET /admin/categories — categories with counts/downloads/status (search/sort/paginate).
+exports.listCategoriesAdmin = async (query = {}) => {
+  const { page, limit, skip } = parsePagination(query);
+  const [cats, usage] = await Promise.all([
+    prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }] }),
+    categoryUsage(),
+  ]);
+
+  let rows = cats.map((c) => {
+    const u = usage[c.slug] || { count: 0, downloads: 0 };
+    return {
+      id: c.id,
+      name: c.name,
+      slug: c.slug,
+      description: c.description || '',
+      image: c.image || null,
+      isPremium: !!c.isPremium,
+      wallpaperCount: u.count,
+      downloads: u.downloads,
+      isActive: c.isActive !== false,
+      // Admin activate/deactivate toggle (hidden from nav/upload when inactive).
+      status: c.isActive !== false ? 'active' : 'inactive',
+      createdAt: c.createdAt,
+    };
+  });
+
+  const q = String(query.q || '').trim().toLowerCase();
+  if (q) rows = rows.filter((r) => r.name.toLowerCase().includes(q) || r.slug.includes(q));
+  if (query.status === 'active' || query.status === 'inactive') {
+    rows = rows.filter((r) => r.status === query.status);
+  }
+
+  const sort = query.sort || 'latest';
+  rows.sort((a, b) => {
+    if (sort === 'wallpapers') return b.wallpaperCount - a.wallpaperCount;
+    if (sort === 'downloads') return b.downloads - a.downloads;
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    if (sort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
+    return new Date(b.createdAt) - new Date(a.createdAt); // latest
+  });
+
+  const total = rows.length;
+  return {
+    message: 'Categories fetched',
+    data: { categories: rows.slice(skip, skip + limit), pagination: buildMeta(total, page, limit) },
+    statusCode: 200,
+  };
+};
+
+// GET /admin/categories/stats — headline cards for the Categories page.
+exports.getCategoryStats = async () => {
+  const [cats, usage] = await Promise.all([
+    prisma.category.findMany({ select: { slug: true, name: true, isActive: true } }),
+    categoryUsage(),
+  ]);
+  let totalWallpapers = 0;
+  let totalDownloads = 0;
+  let active = 0;
+  let mostPopular = null;
+  cats.forEach((c) => {
+    const u = usage[c.slug] || { count: 0, downloads: 0 };
+    totalWallpapers += u.count;
+    totalDownloads += u.downloads;
+    if (c.isActive !== false) active += 1;
+    if (!mostPopular || u.downloads > mostPopular.downloads) {
+      mostPopular = { name: c.name, downloads: u.downloads };
+    }
+  });
+  return {
+    message: 'Category stats',
+    data: { total: cats.length, active, totalWallpapers, totalDownloads, mostPopular },
     statusCode: 200,
   };
 };
@@ -375,6 +575,223 @@ exports.approve = async (id) => setWallpaperStatus(id, 'active', 'Wallpaper appr
 // PATCH /admin/wallpapers/:id/reject → status hidden
 exports.reject = async (id) => setWallpaperStatus(id, 'hidden', 'Wallpaper rejected');
 
+// ───────────────────────── Subscribers ─────────────────────────
+// Premium members (real end-users with a paid plan). Revenue is estimated from
+// the plan price (no payments table in the schema).
+const SUB_PLAN_PRICE = { monthly: 2.99, yearly: 9.99, lifetime: 29.99 };
+const SUB_PLANS = ['monthly', 'yearly', 'lifetime'];
+const SUB_SCOPE = { isPremium: true, role: 'user', isDeleted: false };
+
+const serializeSubscriber = (u) => ({
+  id: u.id,
+  name: `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+  email: u.email,
+  avatar: u.avatar || null,
+  plan: u.subscriptionPlan || 'premium',
+  status: u.subscriptionStatus || 'active',
+  revenue: SUB_PLAN_PRICE[u.subscriptionPlan] || 0,
+  currentPeriodEnd: u.currentPeriodEnd,
+  createdAt: u.createdAt,
+});
+
+// GET /admin/subscribers — premium members (search / plan filter / sort / paginate).
+exports.listSubscribers = async (query = {}) => {
+  const { page, limit, skip } = parsePagination(query);
+  const where = { ...SUB_SCOPE };
+  if (query.plan && SUB_PLANS.includes(query.plan)) where.subscriptionPlan = query.plan;
+  const q = String(query.q || '').trim();
+  if (q) {
+    where.OR = [
+      { email: { contains: q, mode: 'insensitive' } },
+      { firstName: { contains: q, mode: 'insensitive' } },
+      { lastName: { contains: q, mode: 'insensitive' } },
+    ];
+  }
+  const sortMap = {
+    latest: [{ createdAt: 'desc' }],
+    oldest: [{ createdAt: 'asc' }],
+    name: [{ firstName: 'asc' }],
+  };
+  const orderBy = sortMap[query.sort] || sortMap.latest;
+
+  const [rows, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      orderBy,
+      skip,
+      take: limit,
+      select: {
+        id: true, firstName: true, lastName: true, email: true, avatar: true,
+        subscriptionPlan: true, subscriptionStatus: true, currentPeriodEnd: true, createdAt: true,
+      },
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  return {
+    message: 'Subscribers fetched',
+    data: { subscribers: rows.map(serializeSubscriber), pagination: buildMeta(total, page, limit) },
+    statusCode: 200,
+  };
+};
+
+// GET /admin/subscribers/stats — headline cards for the Subscribers page.
+exports.getSubscriberStats = async () => {
+  const groups = await prisma.user.groupBy({
+    by: ['subscriptionPlan'],
+    where: SUB_SCOPE,
+    _count: { _all: true },
+  });
+  const plans = { monthly: 0, yearly: 0, lifetime: 0 };
+  groups.forEach((g) => { if (g.subscriptionPlan && plans[g.subscriptionPlan] !== undefined) plans[g.subscriptionPlan] = g._count._all; });
+  const total = plans.monthly + plans.yearly + plans.lifetime;
+  const revenue = plans.monthly * SUB_PLAN_PRICE.monthly + plans.yearly * SUB_PLAN_PRICE.yearly + plans.lifetime * SUB_PLAN_PRICE.lifetime;
+  return {
+    message: 'Subscriber stats',
+    data: {
+      total,
+      monthly: plans.monthly,
+      yearly: plans.yearly,
+      lifetime: plans.lifetime,
+      revenue: Math.round(revenue * 100) / 100,
+    },
+    statusCode: 200,
+  };
+};
+
+// ───────────────────────── Tag management ─────────────────────────
+// Per-tag live usage from Wallpaper.tags[] (case-insensitive), via unnest.
+async function tagUsage() {
+  const rows = await prisma.$queryRaw`
+    SELECT lower(tag) AS name, count(*)::int AS wp, coalesce(sum("downloadCount"), 0)::int AS dl
+    FROM hw_wallpapers, unnest(tags) AS tag
+    WHERE status = 'active'
+    GROUP BY lower(tag)`;
+  const map = {};
+  rows.forEach((r) => { map[r.name] = { count: Number(r.wp), downloads: Number(r.dl) }; });
+  return map;
+}
+
+// Build the union of managed Tag rows + tags actually used on wallpapers.
+function unionTags(tags, usage) {
+  const byKey = {};
+  tags.forEach((t) => { byKey[t.name.toLowerCase()] = t; });
+  const keys = new Set([...Object.keys(byKey), ...Object.keys(usage)]);
+  return [...keys].map((k) => {
+    const t = byKey[k];
+    const u = usage[k] || { count: 0, downloads: 0 };
+    const isActive = t ? t.isActive !== false : true;
+    return {
+      id: t ? t.id : k,
+      name: t ? t.name : k,
+      slug: t ? t.slug : k,
+      description: t ? t.description : '',
+      isActive,
+      status: isActive ? 'active' : 'inactive',
+      wallpaperCount: u.count,
+      downloads: u.downloads,
+      managed: !!t,
+      createdAt: t ? t.createdAt : null,
+    };
+  });
+}
+
+// GET /admin/tags — union list with usage (search / status filter / sort / paginate).
+exports.listTagsAdmin = async (query = {}) => {
+  const { page, limit, skip } = parsePagination(query);
+  const [tags, usage] = await Promise.all([prisma.tag.findMany(), tagUsage()]);
+  let rows = unionTags(tags, usage);
+
+  const q = String(query.q || '').trim().toLowerCase();
+  if (q) rows = rows.filter((r) => r.name.toLowerCase().includes(q));
+  if (query.status === 'active' || query.status === 'inactive') {
+    rows = rows.filter((r) => r.status === query.status);
+  }
+
+  const sort = query.sort || 'wallpapers';
+  rows.sort((a, b) => {
+    if (sort === 'downloads') return b.downloads - a.downloads;
+    if (sort === 'name') return a.name.localeCompare(b.name);
+    if (sort === 'oldest') return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    if (sort === 'latest') return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    return b.wallpaperCount - a.wallpaperCount; // "most used" default
+  });
+
+  const total = rows.length;
+  return {
+    message: 'Tags fetched',
+    data: { tags: rows.slice(skip, skip + limit), pagination: buildMeta(total, page, limit) },
+    statusCode: 200,
+  };
+};
+
+// GET /admin/tags/stats — headline cards for the Tags page.
+exports.getTagStats = async () => {
+  const [tags, usage, wpTagged, dlAgg] = await Promise.all([
+    prisma.tag.findMany(),
+    tagUsage(),
+    prisma.wallpaper.count({ where: { status: 'active', NOT: { tags: { isEmpty: true } } } }),
+    prisma.wallpaper.aggregate({ _sum: { downloadCount: true } }),
+  ]);
+  const rows = unionTags(tags, usage);
+  const active = rows.filter((r) => r.isActive).length;
+  let mostUsed = null;
+  rows.forEach((r) => { if (!mostUsed || r.wallpaperCount > mostUsed.count) mostUsed = { name: r.name, count: r.wallpaperCount }; });
+  return {
+    message: 'Tag stats',
+    data: {
+      total: rows.length,
+      active,
+      totalWallpapers: wpTagged,
+      totalDownloads: dlAgg._sum.downloadCount || 0,
+      mostUsed,
+    },
+    statusCode: 200,
+  };
+};
+
+// POST /admin/tags — admin creates a tag.
+exports.createTag = async (body = {}) => {
+  const name = body.name && String(body.name).trim().replace(/^#/, '');
+  if (!name) throw fail('Tag name is required', 400);
+  const slug = slugify(name);
+  if (!slug) throw fail('Could not derive a valid slug from the name', 400);
+  if (await prisma.tag.findFirst({ where: { OR: [{ slug }, { name }] } })) {
+    throw fail('This tag already exists', 409);
+  }
+  const tag = await prisma.tag.create({
+    data: { name, slug, description: body.description ? String(body.description).trim() : '', isActive: body.isActive === undefined ? true : !!body.isActive },
+  });
+  return { message: 'Tag created', data: { tag }, statusCode: 201 };
+};
+
+// PATCH /admin/tags/:slug — update (upsert; used-only tags may not have a row yet).
+exports.updateTag = async (slug, body = {}) => {
+  const data = {};
+  if (body.description !== undefined) data.description = String(body.description).trim();
+  if (body.isActive !== undefined) data.isActive = !!body.isActive;
+  if (body.name !== undefined && String(body.name).trim()) data.name = String(body.name).trim().replace(/^#/, '');
+  const name = data.name || slug;
+  const tag = await prisma.tag.upsert({
+    where: { slug },
+    update: data,
+    create: { name, slug, description: data.description || '', isActive: data.isActive === undefined ? true : data.isActive },
+  });
+  return { message: 'Tag updated', data: { tag }, statusCode: 200 };
+};
+
+// DELETE /admin/tags/:slug — remove metadata row + strip the tag from every wallpaper.
+exports.deleteTag = async (slug) => {
+  const tag = await prisma.tag.findUnique({ where: { slug } });
+  const name = tag ? tag.name : slug;
+  if (tag) await prisma.tag.delete({ where: { slug } });
+  await prisma.$executeRaw`
+    UPDATE hw_wallpapers
+    SET tags = coalesce((SELECT array_agg(t) FROM unnest(tags) t WHERE lower(t) <> lower(${name})), '{}')
+    WHERE EXISTS (SELECT 1 FROM unnest(tags) t WHERE lower(t) = lower(${name}))`;
+  return { message: 'Tag deleted', data: { slug }, statusCode: 200 };
+};
+
 // ───────────────────────── User management ─────────────────────────
 
 // GET /admin/users — search / filter / paginate (with favorites + uploads counts)
@@ -390,6 +807,8 @@ exports.listUsers = async (query = {}) => {
   if (verified !== undefined) where.emailVerified = verified;
   const prem = toBool(query.isPremium);
   if (prem !== undefined) where.isPremium = prem;
+  if (query.status === 'active') where.isDeleted = false;
+  if (query.status === 'deactivated') where.isDeleted = true;
 
   const q = String(query.q || '').trim();
   if (q) {
@@ -400,8 +819,16 @@ exports.listUsers = async (query = {}) => {
     ];
   }
 
+  const sortMap = {
+    latest: { createdAt: 'desc' },
+    oldest: { createdAt: 'asc' },
+    name: { firstName: 'asc' },
+    uploads: { uploadedWallpapers: { _count: 'desc' } },
+  };
+  const orderBy = sortMap[query.sort] || sortMap.latest;
+
   const [rows, total] = await Promise.all([
-    prisma.user.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limit, include: USER_COUNTS }),
+    prisma.user.findMany({ where, orderBy, skip, take: limit, include: USER_COUNTS }),
     prisma.user.count({ where }),
   ]);
 
@@ -412,6 +839,58 @@ exports.listUsers = async (query = {}) => {
   };
 };
 
+// GET /admin/users/stats — headline cards for the Users page.
+exports.getUserStats = async () => {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const USERS = { role: 'user', isDeleted: false };
+  const [total, premium, verified, admins, newThisMonth, newPrevMonth] = await Promise.all([
+    prisma.user.count({ where: USERS }),
+    prisma.user.count({ where: { ...USERS, isPremium: true } }),
+    prisma.user.count({ where: { ...USERS, emailVerified: true } }),
+    prisma.user.count({ where: { role: 'admin' } }),
+    prisma.user.count({ where: { role: 'user', createdAt: { gte: startOfMonth } } }),
+    prisma.user.count({ where: { role: 'user', createdAt: { gte: startPrevMonth, lt: startOfMonth } } }),
+  ]);
+  const growth = newPrevMonth
+    ? Math.round(((newThisMonth - newPrevMonth) / newPrevMonth) * 1000) / 10
+    : (newThisMonth ? 100 : 0);
+  return {
+    message: 'User stats',
+    data: { total, premium, verified, admins, newThisMonth, growth },
+    statusCode: 200,
+  };
+};
+
+// POST /admin/users — admin creates a user.
+exports.createUser = async (body = {}) => {
+  const bcrypt = require('bcryptjs');
+  const firstName = body.firstName && String(body.firstName).trim();
+  const email = body.email && String(body.email).trim().toLowerCase();
+  const password = body.password && String(body.password);
+  if (!firstName) throw fail('First name is required', 400);
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw fail('A valid email is required', 400);
+  if (!password || password.length < 8) throw fail('Password must be at least 8 characters', 400);
+  const role = ['user', 'admin'].includes(body.role) ? body.role : 'user';
+  if (await prisma.user.findUnique({ where: { email } })) throw fail('A user with this email already exists', 409);
+
+  const created = await prisma.user.create({
+    data: {
+      firstName,
+      lastName: body.lastName ? String(body.lastName).trim() : '',
+      email,
+      password: await bcrypt.hash(password, 10),
+      role,
+      isPremium: !!body.isPremium,
+      emailVerified: body.emailVerified === undefined ? true : !!body.emailVerified,
+      authProvider: 'local',
+    },
+    include: USER_COUNTS,
+  });
+  return { message: 'User created', data: { user: serializeAdminUser(created) }, statusCode: 201 };
+};
+
 // GET /admin/users/:id — single user + counts
 exports.getUser = async (id) => {
   assertUuid(id, 'user id');
@@ -420,7 +899,7 @@ exports.getUser = async (id) => {
   return { message: 'User fetched', data: { user: serializeAdminUser(u) }, statusCode: 200 };
 };
 
-// PATCH /admin/users/:id — account profile fields ONLY (no role/premium, per doc)
+// PATCH /admin/users/:id — profile fields + admin overrides (role/premium/verified/status)
 exports.updateUser = async (id, body = {}) => {
   assertUuid(id, 'user id');
   const data = {};
@@ -428,8 +907,30 @@ exports.updateUser = async (id, body = {}) => {
     if (body[k] !== undefined) data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
   });
   if (body.firstName !== undefined && !data.firstName) throw fail('First name cannot be empty', 400);
+
+  // Admin overrides.
+  if (body.isPremium !== undefined) data.isPremium = !!body.isPremium;
+  if (body.emailVerified !== undefined) data.emailVerified = !!body.emailVerified;
+  if (body.role !== undefined) {
+    if (!['user', 'admin'].includes(body.role)) throw fail('role must be one of: user, admin', 400);
+    // Don't allow demoting the last remaining admin.
+    if (body.role === 'user') {
+      const current = await prisma.user.findUnique({ where: { id }, select: { role: true } });
+      if (current && current.role === 'admin') {
+        const admins = await prisma.user.count({ where: { role: 'admin' } });
+        if (admins <= 1) throw fail('Cannot demote the last admin account', 400);
+      }
+    }
+    data.role = body.role;
+  }
+  if (body.isDeleted !== undefined) {
+    data.isDeleted = !!body.isDeleted;
+    data.deletedAt = body.isDeleted ? new Date() : null;
+    if (body.isDeleted) data.sessionsValidFrom = new Date(); // force sign-out on deactivate
+  }
+
   if (Object.keys(data).length === 0) {
-    throw fail('No valid fields to update (allowed: firstName, lastName, bio, avatar, banner)', 400);
+    throw fail('No valid fields to update', 400);
   }
 
   let user;
