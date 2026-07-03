@@ -34,6 +34,8 @@ function serializeUser(user, favoriteIds) {
     banner: user.banner,
     bio: user.bio || '',
     isPremium: !!user.isPremium,
+    subscriptionPlan: user.subscriptionPlan || null,
+    subscriptionStatus: user.subscriptionStatus || null,
     favorites: ids,
     favoritesCount: ids.length,
     createdAt: user.createdAt,

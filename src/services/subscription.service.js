@@ -7,14 +7,40 @@
  */
 const prisma = require('../lib/prisma');
 const stripe = require('../lib/stripe');
+const Stripe = require('stripe');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
 };
+
 const ensureStripe = () => {
-  if (!stripe) throw fail('Payments are not configured on the server', 503);
+  if (!stripe || typeof stripe.checkout === 'undefined') {
+    throw fail('Payments are not configured on the server', 503);
+  }
+};
+
+const isStripeError = (err) =>
+  err instanceof Stripe.errors.StripeError ||
+  (err && typeof err.type === 'string' && err.type.startsWith('Stripe'));
+
+const mapCheckoutError = (err, context = 'checkout') => {
+  if (err && err.statusCode) return err;
+  if (isStripeError(err)) {
+    const detail = (err.raw && err.raw.message) || err.message || 'unknown payment error';
+    // eslint-disable-next-line no-console
+    console.error(`[stripe:${context}] ${err.type || 'StripeError'} ${err.code || ''} — ${detail}`);
+    return fail(`Payment could not be started: ${detail}`, 502);
+  }
+  if (err && err.code && String(err.code).startsWith('P')) {
+    // eslint-disable-next-line no-console
+    console.error(`[stripe:${context}] database error ${err.code}:`, err.message);
+    return fail('Could not save billing details. Please try again.', 500);
+  }
+  // eslint-disable-next-line no-console
+  console.error(`[stripe:${context}] unexpected error:`, err);
+  return fail(err && err.message ? err.message : 'Payment could not be started', 502);
 };
 
 // plan key -> Stripe price + Checkout mode. Monthly/yearly recur; lifetime is a
@@ -26,54 +52,57 @@ const PLANS = {
 };
 
 const APP_URL = () => process.env.APP_URL || 'http://localhost:3661';
-const SUCCESS_URL = () => process.env.STRIPE_SUCCESS_URL || `${APP_URL()}/premium?status=success`;
-const CANCEL_URL = () => process.env.STRIPE_CANCEL_URL || `${APP_URL()}/premium?status=cancelled`;
+const SUCCESS_URL = () => process.env.STRIPE_SUCCESS_URL || `${APP_URL()}/?status=success`;
+const CANCEL_URL = () => process.env.STRIPE_CANCEL_URL || `${APP_URL()}/?status=cancelled`;
 
 const ACTIVE_STATES = ['active', 'trialing'];
 
 // Ensure the user has a *valid* Stripe Customer; returns the customer id.
 // Recreates it if the stored id is missing/deleted (e.g. removed in Stripe).
 async function ensureCustomer(user) {
-  if (user.stripeCustomerId) {
-    try {
-      const existing = await stripe.customers.retrieve(user.stripeCustomerId);
-      if (existing && !existing.deleted) return user.stripeCustomerId;
-    } catch {
-      // falls through to create a fresh customer below
+  try {
+    if (user.stripeCustomerId) {
+      try {
+        const existing = await stripe.customers.retrieve(user.stripeCustomerId);
+        if (existing && !existing.deleted) return user.stripeCustomerId;
+      } catch {
+        // falls through to create a fresh customer below
+      }
     }
+    const customer = await stripe.customers.create({
+      email: user.email,
+      name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || undefined,
+      metadata: { userId: user.id },
+    });
+    await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customer.id } });
+    return customer.id;
+  } catch (err) {
+    throw mapCheckoutError(err, 'customer');
   }
-  const customer = await stripe.customers.create({
-    email: user.email,
-    name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || undefined,
-    metadata: { userId: user.id },
-  });
-  await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customer.id } });
-  return customer.id;
 }
 
 // ── POST /subscriptions/checkout ─────────────────────────────────────────
 exports.createCheckoutSession = async (userId, planKey = 'monthly') => {
-  ensureStripe();
-  const plan = PLANS[planKey];
-  if (!plan) throw fail('Unknown subscription plan', 400);
-  const priceId = plan.price();
-  if (!priceId) throw fail(`No price is configured for the ${planKey} plan`, 503);
-
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) throw fail('User not found', 404);
-  // Premium members may switch/upgrade plans. Block only redundant purchases:
-  // the exact same plan, or anything once lifetime is owned (nothing to upgrade).
-  if (user.isPremium) {
-    if (user.subscriptionPlan === 'lifetime') {
-      throw fail('You already have lifetime premium access', 409);
-    }
-    if (user.subscriptionPlan === planKey) {
-      throw fail('You are already on this plan', 409);
-    }
-  }
-
-  let session;
   try {
+    ensureStripe();
+    const plan = PLANS[planKey];
+    if (!plan) throw fail('Unknown subscription plan', 400);
+    const priceId = plan.price();
+    if (!priceId) throw fail(`No price is configured for the ${planKey} plan`, 503);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw fail('User not found', 404);
+    // Premium members may switch/upgrade plans. Block only redundant purchases:
+    // the exact same plan, or anything once lifetime is owned (nothing to upgrade).
+    if (user.isPremium) {
+      if (user.subscriptionPlan === 'lifetime') {
+        throw fail('You already have lifetime premium access', 409);
+      }
+      if (user.subscriptionPlan === planKey) {
+        throw fail('You are already on this plan', 409);
+      }
+    }
+
     const customerId = await ensureCustomer(user);
     const success = SUCCESS_URL();
     const params = {
@@ -89,19 +118,16 @@ exports.createCheckoutSession = async (userId, planKey = 'monthly') => {
     if (plan.mode === 'subscription') {
       params.subscription_data = { metadata: { userId: user.id, plan: planKey } };
     }
-    session = await stripe.checkout.sessions.create(params);
-  } catch (err) {
-    // Surface Stripe/SDK failures (e.g. wrong key, "No such price/customer" from
-    // an account mismatch) with a clear message + server log, instead of an
-    // opaque 500 that hides the cause on production.
-    if (!err || !String(err.type || '').startsWith('Stripe')) throw err;
-    const detail = (err.raw && err.raw.message) || err.message || 'unknown payment error';
-    // eslint-disable-next-line no-console
-    console.error(`[stripe:checkout] ${err.type} ${err.code || ''} — ${detail}`);
-    throw fail(`Payment could not be started: ${detail}`, 502);
-  }
+    const session = await stripe.checkout.sessions.create(params);
 
-  return { message: 'Checkout session created', data: { url: session.url, id: session.id }, statusCode: 200 };
+    return {
+      message: 'Checkout session created',
+      data: { url: session.url, id: session.id },
+      statusCode: 200,
+    };
+  } catch (err) {
+    throw mapCheckoutError(err, 'checkout');
+  }
 };
 
 // ── POST /subscriptions/confirm ──────────────────────────────────────────

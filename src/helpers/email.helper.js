@@ -108,3 +108,32 @@ exports.sendVerificationEmail = async (to, token, firstName = 'there') => {
   const html = renderTemplate('verify-email', { firstName, link, appName: fromName(), year: new Date().getFullYear() });
   return dispatch({ to, subject: `Verify your ${fromName()} email`, html, link });
 };
+
+// Log provider status once at startup so misconfig is obvious in server logs.
+(function logEmailConfigOnStartup() {
+  if (process.env.NODE_ENV === 'test') return;
+
+  const from = fromEmail();
+  const sandboxFrom = /@resend\.dev$/i.test(from);
+
+  if (resendConfigured()) {
+    // eslint-disable-next-line no-console
+    console.log(`📧 Email provider: Resend (from ${fromHeader()})`);
+    if (sandboxFrom) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '⚠️  EMAIL_FROM uses @resend.dev (sandbox). Resend only delivers to the email on your Resend account — not arbitrary users. Verify halalwalls.com in Resend and set EMAIL_FROM=no-reply@halalwalls.com for production.',
+      );
+    }
+    return;
+  }
+
+  if (smtpConfigured()) {
+    // eslint-disable-next-line no-console
+    console.log(`📧 Email provider: SMTP (${smtpCreds().host}, from ${fromHeader()})`);
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn('📧 Email: no Resend/SMTP configured — auth emails will be console-stubbed only (API still returns success).');
+})();
