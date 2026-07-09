@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true nodemon src/index.js",
     "start": "cross-env NODE_ENV=production NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/index.js",
+    "postinstall": "prisma generate",
     "seed": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/seed/seed.js",
     "seed:users": "cross-env NODE_ENV=development NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true node src/seed/seed-users.js",
     "test": "cross-env NODE_ENV=test NODE_CONFIG_DIR=src/config SUPPRESS_NO_CONFIG_WARNING=true mocha --file src/test/setup.js \"src/test/**/*.test.js\" --timeout 120000 --exit"

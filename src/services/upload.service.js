@@ -54,8 +54,8 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
   // 1. Run the Sharp pipeline (optimized WebP + thumbnail on disk); build the
   //    public absolute URLs from the request origin.
   const processed = await processImage(file.buffer);
-  const imageUrl = `${origin}${processed.image}`;
-  const thumbUrl = `${origin}${processed.thumbnail}`;
+  const imageUrl = processed.image;
+  const thumbUrl = processed.thumbnail;
 
   try {
     // 2. Resolve category — accept a slug or a display label; fill the missing

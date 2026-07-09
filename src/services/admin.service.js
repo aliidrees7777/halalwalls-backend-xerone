@@ -23,6 +23,24 @@ const slugify = (s) =>
 
 const toBool = (v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : undefined);
 
+/** Cumulative downloads across all wallpapers (Wallpaper.downloadCount sum). */
+async function getTotalDownloads() {
+  const agg = await prisma.wallpaper.aggregate({ _sum: { downloadCount: true } });
+  return agg._sum.downloadCount || 0;
+}
+
+/** Per-download event log — used for "this month" when the table/client is available. */
+async function countDownloadEvents(where = {}) {
+  try {
+    if (typeof prisma.downloadEvent?.count === 'function') {
+      return await prisma.downloadEvent.count({ where });
+    }
+  } catch {
+    /* stale Prisma client or missing hw_download_events table */
+  }
+  return 0;
+}
+
 const CONTACT_STATUSES = ['new', 'read', 'resolved'];
 const WALLPAPER_STATUSES = ['active', 'pending', 'hidden'];
 
@@ -145,7 +163,7 @@ exports.getOverview = async () => {
     prisma.contact.groupBy({ by: ['status'], _count: { _all: true } }),
     prisma.wallpaper.aggregate({ _sum: { views: true } }),
     prisma.favorite.count(),
-    prisma.downloadEvent.count(), // real downloads (the per-download log)
+    getTotalDownloads(),
   ]);
 
   const wpByStatus = { active: 0, pending: 0, hidden: 0 };
@@ -247,9 +265,9 @@ exports.getWallpaperStats = async () => {
   const [statusGroups, dlTotal, statusGroupsMonth, dlMonth, resolutionGroups, categories] =
     await Promise.all([
       prisma.wallpaper.groupBy({ by: ['status'], _count: { _all: true } }),
-      prisma.downloadEvent.count(), // real all-time downloads (per-download log)
+      getTotalDownloads(),
       prisma.wallpaper.groupBy({ by: ['status'], where: monthWhere, _count: { _all: true } }),
-      prisma.downloadEvent.count({ where: monthWhere }),
+      countDownloadEvents(monthWhere),
       prisma.wallpaper.groupBy({ by: ['resolution'], _count: { _all: true } }),
       prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }], select: { name: true, slug: true } }),
     ]);
