@@ -7,6 +7,7 @@ const prisma = require('../lib/prisma');
 const { processImage, removeImages } = require('../helpers/image-pipeline');
 const { serializeCard } = require('./wallpaper.service');
 const { resolutionKeysForSource } = require('../helpers/resolution-filter');
+const { parseSourceUrl } = require('../helpers/source-url');
 
 const slugify = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -85,7 +86,16 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
     // 5. Size = the optimized WebP byte length.
     const sizeMB = Math.round((processed.bytes / (1024 * 1024)) * 100) / 100;
 
-    const description = String(body.description || body.source || '').trim();
+    // Source credit: keep the full URL in `description`, and when it's a social
+    // profile URL (instagram.com/user, …) store the username as `author` so the
+    // detail page can show "Source: username" linking back to the URL.
+    const sourceRaw = String(body.description || body.source || '').trim();
+    const parsed = parseSourceUrl(sourceRaw);
+    const description = parsed.url || sourceRaw;
+    const authorFromSource = parsed.username;
+    const author = body.author
+      ? String(body.author).trim()
+      : authorFromSource || 'HalalWalls';
 
     const slug = await uniqueSlug(slugify(title));
 
@@ -115,7 +125,7 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
         sizeMB,
         width,
         height,
-        author: body.author ? String(body.author).trim() : 'HalalWalls',
+        author,
         isPremium,
         isLive,
         status,

@@ -4,6 +4,7 @@
  * Prisma returns plain objects (no document methods), so the public-shape
  * mapping (the old `toPublicJSON`) lives here as plain functions.
  */
+const { hasPremiumAccess } = require('./premium-access');
 
 /**
  * Public-safe user shape. Strips password + token fields and exposes a derived
@@ -13,6 +14,8 @@
  *   • `favoriteIds` — an explicit array of wallpaper-id strings, OR
  *   • a `user.favorites` relation loaded as Favorite rows ({ wallpaperId }).
  * When neither is present, favorites default to an empty list.
+ *
+ * Admins always appear as premium so the public site unlocks premium content.
  */
 function serializeUser(user, favoriteIds) {
   const ids = Array.isArray(favoriteIds)
@@ -20,6 +23,8 @@ function serializeUser(user, favoriteIds) {
     : Array.isArray(user.favorites)
       ? user.favorites.map((f) => String(f.wallpaperId != null ? f.wallpaperId : f))
       : [];
+
+  const premium = hasPremiumAccess(user);
 
   return {
     id: user.id,
@@ -33,8 +38,12 @@ function serializeUser(user, favoriteIds) {
     avatar: user.avatar,
     banner: user.banner,
     bio: user.bio || '',
-    isPremium: !!user.isPremium,
-    subscriptionPlan: user.subscriptionPlan || null,
+    isPremium: premium,
+    // Admins get a lifetime plan label so upgrade CTAs stay quiet.
+    subscriptionPlan:
+      user.role === 'admin'
+        ? user.subscriptionPlan || 'lifetime'
+        : user.subscriptionPlan || null,
     subscriptionStatus: user.subscriptionStatus || null,
     favorites: ids,
     favoritesCount: ids.length,

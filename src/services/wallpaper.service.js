@@ -22,6 +22,7 @@ const {
   downloadCatalogForSource,
   wouldUpscale,
 } = require('../helpers/resolution-filter');
+const { hasPremiumAccess } = require('../helpers/premium-access');
 
 // Short-lived signed token for a resolution download. Issued only after the
 // premium gate passes (trackDownload) and validated by the file endpoint — so
@@ -291,15 +292,17 @@ exports.trackDownload = async (slug, body = {}, userId = null, origin = '') => {
   const doc = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
   if (!doc) throw fail('Wallpaper not found', 404);
 
-  // Premium gating: premium wallpapers are downloadable only by premium members.
-  // Normal users may download non-premium wallpapers only. The user's current
-  // isPremium is read from the DB (authoritative — it can change after the token
-  // was issued, e.g. once a subscription activates).
+  // Premium gating: premium wallpapers are downloadable by premium members
+  // and by admins (full site access). Non-premium wallpapers stay open to any
+  // signed-in user. isPremium/role are read from the DB (authoritative).
   if (doc.isPremium) {
     const user = userId
-      ? await prisma.user.findUnique({ where: { id: userId }, select: { isPremium: true } })
+      ? await prisma.user.findUnique({
+          where: { id: userId },
+          select: { isPremium: true, role: true },
+        })
       : null;
-    if (!user || !user.isPremium) {
+    if (!hasPremiumAccess(user)) {
       throw fail('This is a premium wallpaper — upgrade to Premium to download it.', 403);
     }
   }
@@ -357,8 +360,20 @@ exports.trackDownload = async (slug, body = {}, userId = null, origin = '') => {
 };
 
 // ── GET /wallpapers/:slug/file?dl=<token> — render + serve the download ────
-// Validates the signed token (premium gate already enforced when issued), then
-// renders the requested resolution (cached on disk) and returns the JPEG bytes.
+// Validates the signed token (premium gate already enforced when issued).
+//   • original → serve the stored source bytes as-is (matches sizeMB on the UI)
+//   • WxH      → render a JPEG at that size (cached on disk)
+function sourceMimeAndExt(imageUrl) {
+  const pathOnly = String(imageUrl || '').split('?')[0].toLowerCase();
+  if (pathOnly.endsWith('.png')) return { contentType: 'image/png', ext: 'png' };
+  if (pathOnly.endsWith('.jpg') || pathOnly.endsWith('.jpeg')) {
+    return { contentType: 'image/jpeg', ext: 'jpg' };
+  }
+  if (pathOnly.endsWith('.gif')) return { contentType: 'image/gif', ext: 'gif' };
+  // Uploads pipeline stores optimized WebP by default.
+  return { contentType: 'image/webp', ext: 'webp' };
+}
+
 exports.getDownloadFile = async (slug, token) => {
   if (!token) throw fail('Missing download token', 403);
 
@@ -373,9 +388,23 @@ exports.getDownloadFile = async (slug, token) => {
   const doc = await prisma.wallpaper.findFirst({ where: { slug, status: 'active' } });
   if (!doc) throw fail('Wallpaper not found', 404);
 
-  const width = payload.original ? null : payload.w;
-  const height = payload.original ? null : payload.h;
-  const label = width && height ? `${width}x${height}` : 'original';
+  const sourceUrl = doc.originalUrl || doc.image;
+
+  // Original download: return the exact stored file (no re-encode) so the
+  // "Download Original (X MB)" label matches the bytes the user receives.
+  if (payload.original) {
+    const buffer = await fetchSource(sourceUrl);
+    const { contentType, ext } = sourceMimeAndExt(sourceUrl);
+    return {
+      buffer,
+      filename: `halalwalls-${slug}-original.${ext}`,
+      contentType,
+    };
+  }
+
+  const width = payload.w;
+  const height = payload.h;
+  const label = `${width}x${height}`;
 
   // Cache key includes updatedAt so an admin image change invalidates old files.
   const stamp = doc.updatedAt ? doc.updatedAt.getTime() : 0;
@@ -385,7 +414,7 @@ exports.getDownloadFile = async (slug, token) => {
   try {
     buffer = await fs.promises.readFile(cacheFile); // cache hit → instant
   } catch {
-    const source = await fetchSource(doc.originalUrl || doc.image);
+    const source = await fetchSource(sourceUrl);
     buffer = await renderJpeg(source, width, height);
     fs.promises.writeFile(cacheFile, buffer).catch(() => {}); // best-effort cache
   }
@@ -420,7 +449,6 @@ exports.listTags = async (query = {}) => {
   return { message: 'Tags fetched', data: { tags }, statusCode: 200 };
 };
 
-exports.DOWNLOAD_RESOLUTIONS = DOWNLOAD_RESOLUTIONS;
-// Shared serializers (re-used by the favorites/profile services).
 exports.serializeCard = serializeCard;
 exports.serializeDetail = serializeDetail;
+exports.downloadCatalogForSource = downloadCatalogForSource;

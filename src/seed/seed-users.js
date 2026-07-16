@@ -12,8 +12,27 @@ const bcrypt = require('bcryptjs');
 const prisma = require('../lib/prisma');
 
 const ACCOUNTS = [
-  { firstName: 'Admin', lastName: 'HalalWalls', email: 'admin@halalwalls.com', password: 'Admin@12345', role: 'admin' },
-  { firstName: 'Demo', lastName: 'User', email: 'user@halalwalls.com', password: 'User@12345', role: 'user' },
+  {
+    firstName: 'Admin',
+    lastName: 'HalalWalls',
+    email: 'admin@halalwalls.com',
+    password: 'Admin@12345',
+    role: 'admin',
+    // Full public-site entitlements (premium downloads, etc.) locally + prod.
+    isPremium: true,
+    subscriptionPlan: 'lifetime',
+    subscriptionStatus: 'active',
+  },
+  {
+    firstName: 'Demo',
+    lastName: 'User',
+    email: 'user@halalwalls.com',
+    password: 'User@12345',
+    role: 'user',
+    isPremium: false,
+    subscriptionPlan: null,
+    subscriptionStatus: null,
+  },
 ];
 
 async function seedUsers() {
@@ -33,13 +52,18 @@ async function seedUsers() {
       role: a.role,
       authProvider: 'local',
       emailVerified: true, // pre-verified so sign-in is frictionless
+      isPremium: a.isPremium,
+      subscriptionPlan: a.subscriptionPlan,
+      subscriptionStatus: a.subscriptionStatus,
     };
     await prisma.user.upsert({
       where: { email: a.email },
       create: { email: a.email, ...data },
       update: data,
     });
-    console.log(`👤 ${a.role.padEnd(5)} ${a.email}  (password: ${a.password})`);
+    console.log(
+      `👤 ${a.role.padEnd(5)} ${a.email}  (password: ${a.password}${a.isPremium ? ', premium' : ''})`,
+    );
   }
 
   await prisma.$disconnect();

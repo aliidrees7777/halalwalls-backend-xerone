@@ -65,7 +65,7 @@ exports.trackDownload = async (req, res, next) => {
 };
 
 // GET /api/v1/wallpapers/:slug/file?dl=<token>
-// Renders + serves the wallpaper at the requested resolution as a download.
+// Serves the wallpaper download (original file as-is, or a rendered JPEG size).
 // Public but token-gated (the token is issued only after the premium gate).
 exports.downloadFile = async (req, res, next) => {
   try {
