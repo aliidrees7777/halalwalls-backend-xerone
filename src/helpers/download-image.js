@@ -56,14 +56,14 @@ async function fetchSource(imageUrl) {
 }
 
 // Render the download JPEG. width/height null → original size (convert only);
-// otherwise resize to exactly width×height (cover crop, centred).
+// otherwise resize to width×height (cover crop, centred). Never upscales.
 async function renderJpeg(sourceBuffer, width, height) {
   const pipeline = sharp(sourceBuffer).rotate(); // honour EXIF orientation
   if (width && height) {
     pipeline.resize(width, height, {
       fit: 'cover',
       position: 'centre',
-      withoutEnlargement: false, // the user explicitly picked this resolution
+      withoutEnlargement: true,
     });
   }
   return pipeline.jpeg({ quality: width && height ? 90 : 92 }).toBuffer();

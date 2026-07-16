@@ -18,6 +18,10 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
 const { fetchSource, renderJpeg, CACHE_DIR } = require('../helpers/download-image');
+const {
+  downloadCatalogForSource,
+  wouldUpscale,
+} = require('../helpers/resolution-filter');
 
 // Short-lived signed token for a resolution download. Issued only after the
 // premium gate passes (trackDownload) and validated by the file endpoint — so
@@ -41,27 +45,6 @@ function parseResolution(input) {
 const BROWSE_MODES = ['latest', 'popular', 'random', 'live'];
 const DEFAULT_LIMIT = 18;
 const MAX_LIMIT = 60;
-
-// Fixed download-resolution set surfaced on the detail page (matches the
-// frontend resolutions data). Returned alongside each wallpaper detail.
-const DOWNLOAD_RESOLUTIONS = {
-  desktop: [
-    { label: '1920×1080', width: 1920, height: 1080, fileSizeMB: 1.42, device: 'desktop' },
-    { label: '2560×1440', width: 2560, height: 1440, fileSizeMB: 2.18, device: 'desktop' },
-    { label: '3840×2160', width: 3840, height: 2160, fileSizeMB: 4.86, device: 'desktop' },
-    { label: '1280×720', width: 1280, height: 720, fileSizeMB: 0.88, device: 'desktop' },
-    { label: '1366×768', width: 1366, height: 768, fileSizeMB: 0.94, device: 'desktop' },
-    { label: '1600×900', width: 1600, height: 900, fileSizeMB: 1.12, device: 'desktop' },
-  ],
-  mobile: [
-    { label: '1080×2400', width: 1080, height: 2400, fileSizeMB: 1.64, device: 'mobile' },
-    { label: '1290×2796', width: 1290, height: 2796, fileSizeMB: 1.92, device: 'mobile' },
-    { label: '1320×2868', width: 1320, height: 2868, fileSizeMB: 2.04, device: 'mobile' },
-    { label: '1170×2532', width: 1170, height: 2532, fileSizeMB: 1.78, device: 'mobile' },
-    { label: '1440×3200', width: 1440, height: 3200, fileSizeMB: 2.28, device: 'mobile' },
-    { label: '1080×2340', width: 1080, height: 2340, fileSizeMB: 1.58, device: 'mobile' },
-  ],
-};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 const fail = (message, statusCode) => {
@@ -119,6 +102,7 @@ function serializeCard(doc, favSet) {
 // Detail shape — matches the frontend `WallpaperDetail` type.
 function serializeDetail(doc, favSet) {
   const tags = doc.tags || [];
+  const catalog = downloadCatalogForSource(doc.width, doc.height);
   return {
     ...serializeCard(doc, favSet),
     description: doc.description || '',
@@ -131,7 +115,14 @@ function serializeDetail(doc, favSet) {
       doc.width && doc.height ? `${doc.width}×${doc.height}` : doc.resolution || '',
     originalSizeMB: doc.sizeMB || 0,
     preferredResolution: doc.preferredResolution || doc.resolution || '',
-    resolutions: doc.resolutions || [],
+    // Recompute from source dims so legacy rows don't advertise upscales.
+    resolutions: [
+      ...catalog.desktop.map((r) => `${r.width}x${r.height}`),
+      ...catalog.mobile.map((r) => `${r.width}x${r.height}`),
+    ],
+    downloadResolutions: catalog,
+    width: doc.width || null,
+    height: doc.height || null,
     image: doc.image,
     originalUrl: doc.originalUrl || doc.image,
   };
@@ -256,7 +247,10 @@ exports.getBySlug = async (slug, favSet = null) => {
 
   return {
     message: 'Wallpaper fetched',
-    data: { wallpaper, downloadResolutions: DOWNLOAD_RESOLUTIONS },
+    data: {
+      wallpaper,
+      downloadResolutions: wallpaper.downloadResolutions,
+    },
     statusCode: 200,
   };
 };
@@ -318,6 +312,12 @@ exports.trackDownload = async (slug, body = {}, userId = null, origin = '') => {
   // Sign a short-lived token for the requested resolution and return a link to
   // the file endpoint, which renders + serves the actual image.
   const parsed = parseResolution(body.resolution);
+  if (!parsed.original && wouldUpscale(parsed.w, parsed.h, doc.width, doc.height)) {
+    throw fail(
+      'That resolution is larger than the original image — pick the original or a smaller size.',
+      400,
+    );
+  }
   const payload = parsed.original
     ? { slug, original: true, p: 'dl' }
     : { slug, w: parsed.w, h: parsed.h, p: 'dl' };

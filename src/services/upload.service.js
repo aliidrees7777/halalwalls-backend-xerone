@@ -6,9 +6,7 @@
 const prisma = require('../lib/prisma');
 const { processImage, removeImages } = require('../helpers/image-pipeline');
 const { serializeCard } = require('./wallpaper.service');
-
-// Standard download set carried on every wallpaper (matches the seed data).
-const STANDARD_RESOLUTIONS = ['1920x1080', '2560x1440', '3840x2160'];
+const { resolutionKeysForSource } = require('../helpers/resolution-filter');
 
 const slugify = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -112,7 +110,8 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
         thumbnailUrl: thumbUrl,
         resolution,
         preferredResolution: resolution,
-        resolutions: STANDARD_RESOLUTIONS,
+        // Only same-or-smaller standard sizes (never offer upscales).
+        resolutions: resolutionKeysForSource(width, height),
         sizeMB,
         width,
         height,
