@@ -6,7 +6,7 @@
 const prisma = require('../lib/prisma');
 const { processImage, removeImages } = require('../helpers/image-pipeline');
 const { serializeCard } = require('./wallpaper.service');
-const { resolutionKeysForSource } = require('../helpers/resolution-filter');
+const { resolutionKeysForSource, preferredResolutionForSource } = require('../helpers/resolution-filter');
 const { parseSourceUrl } = require('../helpers/source-url');
 
 const slugify = (s) =>
@@ -119,7 +119,10 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
         originalUrl: imageUrl,
         thumbnailUrl: thumbUrl,
         resolution,
-        preferredResolution: resolution,
+        // Primary download button uses largest standard size that fits (4K/2K/HD),
+        // never the raw native size — Original button keeps the real file.
+        preferredResolution:
+          preferredResolutionForSource(width, height) || resolution,
         // Only same-or-smaller standard sizes (never offer upscales).
         resolutions: resolutionKeysForSource(width, height),
         sizeMB,

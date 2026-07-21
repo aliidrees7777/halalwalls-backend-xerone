@@ -21,6 +21,9 @@ const { fetchSource, renderJpeg, CACHE_DIR } = require('../helpers/download-imag
 const {
   downloadCatalogForSource,
   wouldUpscale,
+  preferredResolutionForSource,
+  preferredDisplayLabel,
+  qualityLabelForDownload,
 } = require('../helpers/resolution-filter');
 const { hasPremiumAccess } = require('../helpers/premium-access');
 
@@ -104,6 +107,13 @@ function serializeCard(doc, favSet) {
 function serializeDetail(doc, favSet) {
   const tags = doc.tags || [];
   const catalog = downloadCatalogForSource(doc.width, doc.height);
+  // Always derive preferred from source dims so old rows (native preferred)
+  // still show a standard 4K/2K/HD primary download — never the raw original.
+  const preferredKey =
+    preferredResolutionForSource(doc.width, doc.height) ||
+    doc.preferredResolution ||
+    doc.resolution ||
+    '';
   return {
     ...serializeCard(doc, favSet),
     description: doc.description || '',
@@ -115,7 +125,8 @@ function serializeDetail(doc, favSet) {
     originalResolution:
       doc.width && doc.height ? `${doc.width}×${doc.height}` : doc.resolution || '',
     originalSizeMB: doc.sizeMB || 0,
-    preferredResolution: doc.preferredResolution || doc.resolution || '',
+    preferredResolution: preferredKey,
+    preferredResolutionLabel: preferredDisplayLabel(preferredKey),
     // Recompute from source dims so legacy rows don't advertise upscales.
     resolutions: [
       ...catalog.desktop.map((r) => `${r.width}x${r.height}`),
@@ -151,17 +162,66 @@ function resolveSelector(query) {
 }
 
 // Build the Prisma `where` clause shared by list/count.
-function buildWhere(query, categorySlug, mode) {
+async function buildWhere(query, categorySlug, mode) {
   const where = { status: 'active' };
-  if (categorySlug) where.categorySlug = categorySlug;
-  if (mode === 'live') where.isLive = true;
-  if (query.tag) where.tags = { has: String(query.tag) };
 
-  // Filter by the wallpaper's native resolution (e.g. "3840x2160"). Accepts the
-  // "×" display char too. Combines with category/sort/tag.
+  // Premium Walls: treat as isPremium flag (not a thematic categorySlug alone).
+  // Matches known premium slugs OR a category row marked isPremium.
+  const premiumSlugs = new Set(['premium', 'premium-walls', 'premiumwalls']);
+  let treatAsPremium = !!(categorySlug && premiumSlugs.has(categorySlug));
+  if (categorySlug && !treatAsPremium) {
+    const catRow = await prisma.category.findUnique({
+      where: { slug: categorySlug },
+      select: { isPremium: true },
+    });
+    if (catRow?.isPremium) treatAsPremium = true;
+  }
+  if (treatAsPremium) {
+    where.isPremium = true;
+  } else if (categorySlug) {
+    where.categorySlug = categorySlug;
+  }
+
+  if (mode === 'live') where.isLive = true;
+
+  // Case-insensitive tag match (Postgres array `has` is case-sensitive).
+  if (query.tag) {
+    const tag = String(query.tag).trim();
+    if (tag) {
+      const rows = await prisma.$queryRaw`
+        SELECT id FROM hw_wallpapers w
+        WHERE w.status = 'active'
+          AND EXISTS (
+            SELECT 1 FROM unnest(w.tags) AS t
+            WHERE lower(t) = lower(${tag})
+          )
+      `;
+      where.id = { in: rows.map((r) => r.id) };
+    }
+  }
+
+  // Filter by downloadable size: wallpapers that can serve this resolution
+  // (stored in resolutions[]) OR native match (legacy rows).
   if (query.resolution) {
-    const r = String(query.resolution).replace(/×/g, 'x').trim();
-    if (r) where.resolution = { equals: r, mode: 'insensitive' };
+    const r = String(query.resolution).replace(/×/g, 'x').trim().toLowerCase();
+    if (r) {
+      const m = r.match(/^(\d+)x(\d+)$/);
+      if (m) {
+        const tw = parseInt(m[1], 10);
+        const th = parseInt(m[2], 10);
+        where.AND = [
+          ...(where.AND || []),
+          {
+            OR: [
+              { resolutions: { has: r } },
+              { resolution: { equals: r, mode: 'insensitive' } },
+              // Also include sources large enough to offer this download size.
+              { AND: [{ width: { gte: tw } }, { height: { gte: th } }] },
+            ],
+          },
+        ];
+      }
+    }
   }
 
   const q = String(query.q || query.search || '').trim();
@@ -170,7 +230,6 @@ function buildWhere(query, categorySlug, mode) {
       { title: { contains: q, mode: 'insensitive' } },
       { categorySlug: { contains: q, mode: 'insensitive' } },
       { category: { contains: q, mode: 'insensitive' } },
-      { tags: { has: q } }, // arrays match exact elements (no substring)
     ];
   }
   return { where, q };
@@ -179,7 +238,7 @@ function buildWhere(query, categorySlug, mode) {
 // ── GET /wallpapers — list / search / filter / sort / paginate ───────────
 exports.listPublic = async (query = {}, favSet = null) => {
   const { categorySlug, mode } = resolveSelector(query);
-  const { where, q } = buildWhere(query, categorySlug, mode);
+  const { where, q } = await buildWhere(query, categorySlug, mode);
 
   const page = clampPage(query.page);
   const limit = clampLimit(query.limit);
@@ -189,10 +248,10 @@ exports.listPublic = async (query = {}, favSet = null) => {
   let total;
 
   if (mode === 'random') {
-    // Sample `limit` random rows: pull matching ids, shuffle, fetch the slice.
+    // Shuffle all matching ids, then paginate so Next/Prev actually work.
     const ids = await prisma.wallpaper.findMany({ where, select: { id: true } });
     total = ids.length;
-    const pick = shuffle(ids.map((r) => r.id)).slice(0, limit);
+    const pick = shuffle(ids.map((r) => r.id)).slice(skip, skip + limit);
     docs = pick.length
       ? await prisma.wallpaper.findMany({ where: { id: { in: pick } } })
       : [];
@@ -397,7 +456,7 @@ exports.getDownloadFile = async (slug, token) => {
     const { contentType, ext } = sourceMimeAndExt(sourceUrl);
     return {
       buffer,
-      filename: `halalwalls-${slug}-original.${ext}`,
+      filename: `${slug}-original-halalwalls.${ext}`,
       contentType,
     };
   }
@@ -405,6 +464,7 @@ exports.getDownloadFile = async (slug, token) => {
   const width = payload.w;
   const height = payload.h;
   const label = `${width}x${height}`;
+  const quality = qualityLabelForDownload(width, height, false);
 
   // Cache key includes updatedAt so an admin image change invalidates old files.
   const stamp = doc.updatedAt ? doc.updatedAt.getTime() : 0;
@@ -419,7 +479,11 @@ exports.getDownloadFile = async (slug, token) => {
     fs.promises.writeFile(cacheFile, buffer).catch(() => {}); // best-effort cache
   }
 
-  return { buffer, filename: `halalwalls-${slug}-${label}.jpg`, contentType: 'image/jpeg' };
+  return {
+    buffer,
+    filename: `${slug}-${quality}-halalwalls.jpg`,
+    contentType: 'image/jpeg',
+  };
 };
 
 // ── GET /wallpapers/tags — popular tags across active wallpapers ─────────

@@ -26,16 +26,26 @@ const serialize = (c, count) => ({
 });
 
 // Map of categorySlug -> active wallpaper count.
+// Premium / premium-walls categories count wallpapers flagged isPremium.
+const PREMIUM_SLUGS = new Set(['premium', 'premium-walls', 'premiumwalls']);
+
 const liveCounts = async () => {
-  const rows = await prisma.wallpaper.groupBy({
-    by: ['categorySlug'],
-    where: { status: 'active' },
-    _count: { _all: true },
-  });
+  const [rows, premiumCount] = await Promise.all([
+    prisma.wallpaper.groupBy({
+      by: ['categorySlug'],
+      where: { status: 'active' },
+      _count: { _all: true },
+    }),
+    prisma.wallpaper.count({ where: { status: 'active', isPremium: true } }),
+  ]);
   return rows.reduce((m, r) => {
     if (r.categorySlug) m[r.categorySlug] = r._count._all;
     return m;
-  }, {});
+  }, /** @type {Record<string, number>} */ ({
+    premium: premiumCount,
+    'premium-walls': premiumCount,
+    premiumwalls: premiumCount,
+  }));
 };
 
 // ── GET /categories — active categories with live wallpaper counts ───────
@@ -56,7 +66,9 @@ exports.listAll = async () => {
 exports.getBySlug = async (slug) => {
   const cat = await prisma.category.findUnique({ where: { slug } });
   if (!cat) throw fail('Category not found', 404);
-  const count = await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
+  const count = PREMIUM_SLUGS.has(slug)
+    ? await prisma.wallpaper.count({ where: { status: 'active', isPremium: true } })
+    : await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
   return { message: 'Category fetched', data: { category: serialize(cat, count) }, statusCode: 200 };
 };
 
