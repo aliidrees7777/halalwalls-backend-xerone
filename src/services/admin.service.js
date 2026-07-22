@@ -6,6 +6,10 @@
 //   • Q2.3 — moderation queue (pending / approve / reject)
 const prisma = require('../lib/prisma');
 const { parsePagination, buildMeta } = require('../helpers/pagination');
+const {
+  resolutionKeysForSource,
+  preferredResolutionForSource,
+} = require('../helpers/resolution-filter');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
@@ -475,6 +479,25 @@ exports.createWallpaper = async (body = {}, adminId = null) => {
     if (cat) categoryLabel = cat.name;
   }
 
+  const width = Number.isFinite(+body.width) ? +body.width : null;
+  const height = Number.isFinite(+body.height) ? +body.height : null;
+  const resolution = body.resolution
+    ? String(body.resolution).trim()
+    : width && height
+      ? `${width}x${height}`
+      : '';
+  // Cascade: only same-or-smaller standard sizes the source can cover.
+  const cascadeKeys =
+    width && height
+      ? resolutionKeysForSource(width, height)
+      : Array.isArray(body.resolutions)
+        ? body.resolutions
+        : [];
+  const preferred =
+    (body.preferredResolution && String(body.preferredResolution).trim()) ||
+    (width && height ? preferredResolutionForSource(width, height) : null) ||
+    resolution;
+
   const created = await prisma.wallpaper.create({
     data: {
       title,
@@ -486,12 +509,12 @@ exports.createWallpaper = async (body = {}, adminId = null) => {
       image,
       originalUrl: body.originalUrl ? String(body.originalUrl).trim() : image,
       thumbnailUrl: body.thumbnailUrl ? String(body.thumbnailUrl).trim() : image,
-      resolution: body.resolution ? String(body.resolution).trim() : '',
-      preferredResolution: (body.preferredResolution || body.resolution || '').toString().trim(),
-      resolutions: Array.isArray(body.resolutions) ? body.resolutions : [],
+      resolution,
+      preferredResolution: preferred,
+      resolutions: cascadeKeys,
       sizeMB: Number.isFinite(+body.sizeMB) ? +body.sizeMB : 0,
-      width: Number.isFinite(+body.width) ? +body.width : null,
-      height: Number.isFinite(+body.height) ? +body.height : null,
+      width,
+      height,
       author: body.author ? String(body.author).trim() : 'HalalWalls',
       isPremium: !!body.isPremium,
       isLive: !!body.isLive,
@@ -518,6 +541,28 @@ exports.updateWallpaper = async (id, body = {}) => {
   if (body.sizeMB !== undefined) data.sizeMB = Number.isFinite(+body.sizeMB) ? +body.sizeMB : 0;
   if (body.width !== undefined) data.width = Number.isFinite(+body.width) ? +body.width : null;
   if (body.height !== undefined) data.height = Number.isFinite(+body.height) ? +body.height : null;
+
+  // When dims change (or are present after update), rebuild cascade keys so
+  // filters never list a wallpaper under a size it can't actually serve.
+  if (data.width !== undefined || data.height !== undefined || body.resolutions === undefined) {
+    const existing = await prisma.wallpaper.findUnique({
+      where: { id },
+      select: { width: true, height: true, resolution: true },
+    });
+    if (!existing) throw fail('Wallpaper not found', 404);
+    const w = data.width !== undefined ? data.width : existing.width;
+    const h = data.height !== undefined ? data.height : existing.height;
+    if (w && h) {
+      if (body.resolutions === undefined) data.resolutions = resolutionKeysForSource(w, h);
+      if (body.preferredResolution === undefined) {
+        data.preferredResolution = preferredResolutionForSource(w, h) || existing.resolution || `${w}x${h}`;
+      }
+      if (body.resolution === undefined && !existing.resolution) {
+        data.resolution = `${w}x${h}`;
+      }
+    }
+  }
+
   if (body.isPremium !== undefined) data.isPremium = !!body.isPremium;
   if (body.isLive !== undefined) data.isLive = !!body.isLive;
   if (body.status !== undefined) {

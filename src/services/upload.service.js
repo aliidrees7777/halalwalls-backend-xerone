@@ -50,9 +50,12 @@ function parseTags(input) {
 //   body   — { category | categorySlug, tags, source | description, title?, author? }
 //   origin — absolute base URL (e.g. http://localhost:3662) for the public image URL
 exports.createUpload = async (userId, file, body = {}, origin = '', options = {}) => {
-  // 1. Run the Sharp pipeline (optimized WebP + thumbnail on disk); build the
-  //    public absolute URLs from the request origin.
-  const processed = await processImage(file.buffer);
+  // 1. Persist original bytes + display WebP + thumb; build public paths.
+  const processed = await processImage(file.buffer, {
+    mimetype: file.mimetype,
+    originalname: file.originalname,
+  });
+  const originalUrl = processed.original;
   const imageUrl = processed.image;
   const thumbUrl = processed.thumbnail;
 
@@ -78,12 +81,11 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
     const title =
       (body.title && String(body.title).trim()) || fileBase || categoryLabel || 'Untitled wallpaper';
 
-    // 4. Real dimensions come from the Sharp pipeline (after any 4K downscale).
+    // 4. Dimensions + sizeMB come from the ORIGINAL upload (not the display WebP),
+    //    so "Download Original" matches the file the user uploaded (e.g. 10K / 10MB).
     const width = processed.width;
     const height = processed.height;
     const resolution = width && height ? `${width}x${height}` : '';
-
-    // 5. Size = the optimized WebP byte length.
     const sizeMB = Math.round((processed.bytes / (1024 * 1024)) * 100) / 100;
 
     // Source credit: keep the full URL in `description`, and when it's a social
@@ -99,7 +101,7 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
 
     const slug = await uniqueSlug(slugify(title));
 
-    // 6. Admin uploads publish immediately (active) and may set premium/live;
+    // 5. Admin uploads publish immediately (active) and may set premium/live;
     //    user submissions are held at 'pending' and are never premium/live.
     const isAdmin = options.admin === true;
     const status = options.status || (isAdmin ? 'active' : 'pending');
@@ -115,15 +117,15 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
         category: categoryLabel,
         categorySlug,
         tags: parseTags(body.tags),
+        // Browse/grid uses the optimized WebP; Original download uses originalUrl.
         image: imageUrl,
-        originalUrl: imageUrl,
+        originalUrl,
         thumbnailUrl: thumbUrl,
         resolution,
-        // Primary download button uses largest standard size that fits (4K/2K/HD),
-        // never the raw native size — Original button keeps the real file.
+        // Primary button = largest standard size that fits (4K/2K/HD).
         preferredResolution:
           preferredResolutionForSource(width, height) || resolution,
-        // Only same-or-smaller standard sizes (never offer upscales).
+        // Cascade: same + smaller standard sizes only (never upscales).
         resolutions: resolutionKeysForSource(width, height),
         sizeMB,
         width,

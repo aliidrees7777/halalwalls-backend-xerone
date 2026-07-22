@@ -11,6 +11,10 @@
  */
 require('../config/loadEnv'); // loads .env.local (dev) or .env.production (prod)
 const prisma = require('../lib/prisma');
+const {
+  resolutionKeysForSource,
+  preferredResolutionForSource,
+} = require('../helpers/resolution-filter');
 
 // ── categories (slugs match the frontend FilterId union) ──
 const CATEGORIES = [
@@ -111,8 +115,8 @@ async function seed() {
       originalUrl: image,
       thumbnailUrl: image,
       resolution,
-      preferredResolution: resolution,
-      resolutions: ['1920x1080', '2560x1440', '3840x2160'],
+      preferredResolution: preferredResolutionForSource(width, height) || resolution,
+      resolutions: resolutionKeysForSource(width, height),
       width,
       height,
       sizeMB: sizeFor(width, height),

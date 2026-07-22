@@ -13,7 +13,8 @@ const ALLOWED_MIME = ['image/jpeg', 'image/png'];
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  // Allow large 5K/10K originals; display WebP is still capped at 4K width.
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
   fileFilter: (req, file, cb) => {
     if (ALLOWED_MIME.includes(file.mimetype)) {
       return cb(null, true);

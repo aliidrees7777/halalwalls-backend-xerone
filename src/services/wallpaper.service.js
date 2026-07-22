@@ -200,8 +200,13 @@ async function buildWhere(query, categorySlug, mode) {
     }
   }
 
-  // Filter by downloadable size: wallpapers that can serve this resolution
-  // (stored in resolutions[]) OR native match (legacy rows).
+  // Cascade-down filter: a wallpaper appears under a target size only when its
+  // native pixels are large enough to serve it without upscaling.
+  //   4K → listed under 4K, 2K, Full HD
+  //   2K → listed under 2K, Full HD (not 4K)
+  //   Full HD → Full HD only
+  // Do NOT use resolutions[] here — that denormalized array was historically
+  // seeded with every desktop key and caused upward leaks (1080p under 4K).
   if (query.resolution) {
     const r = String(query.resolution).replace(/×/g, 'x').trim().toLowerCase();
     if (r) {
@@ -211,14 +216,8 @@ async function buildWhere(query, categorySlug, mode) {
         const th = parseInt(m[2], 10);
         where.AND = [
           ...(where.AND || []),
-          {
-            OR: [
-              { resolutions: { has: r } },
-              { resolution: { equals: r, mode: 'insensitive' } },
-              // Also include sources large enough to offer this download size.
-              { AND: [{ width: { gte: tw } }, { height: { gte: th } }] },
-            ],
-          },
+          { width: { gte: tw } },
+          { height: { gte: th } },
         ];
       }
     }
