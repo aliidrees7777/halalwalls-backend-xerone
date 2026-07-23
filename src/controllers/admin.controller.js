@@ -154,6 +154,16 @@ exports.updateWallpaper = async (req, res, next) => {
   }
 };
 
+// POST /api/v1/admin/wallpapers/:id/image — replace image file only
+exports.replaceWallpaperImage = async (req, res, next) => {
+  try {
+    const response = await AdminService.replaceWallpaperImage(req.params.id, req.file);
+    res.sendSuccess(response.message, response.data, response.statusCode);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // DELETE /api/v1/admin/wallpapers/:id
 exports.deleteWallpaper = async (req, res, next) => {
   try {

@@ -12,6 +12,7 @@ const {
   preferredResolutionForSource,
 } = require('../helpers/resolution-filter');
 const { resolveCategories, categoryWhere } = require('../helpers/category-resolve');
+const { processImage, removeImages } = require('../helpers/image-pipeline');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
@@ -28,6 +29,17 @@ const slugify = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 const toBool = (v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : undefined);
+
+/** Extract local `/uploads/<filename>` basenames from wallpaper media URLs. */
+function uploadFilenamesFromUrls(...urls) {
+  const names = [];
+  for (const url of urls) {
+    if (!url) continue;
+    const m = String(url).match(/\/uploads\/([^/?#]+)/i);
+    if (m?.[1]) names.push(m[1]);
+  }
+  return [...new Set(names)];
+}
 
 /** Cumulative downloads across all wallpapers (Wallpaper.downloadCount sum). */
 async function getTotalDownloads() {
@@ -628,15 +640,90 @@ exports.updateWallpaper = async (id, body = {}) => {
   return { message: 'Wallpaper updated', data: { wallpaper: serializeAdminWallpaper(updated) }, statusCode: 200 };
 };
 
-// DELETE /admin/wallpapers/:id (cascades favorites)
+/**
+ * POST /admin/wallpapers/:id/image — replace ONLY the image files.
+ * Processes the new upload, updates media + dimension fields, then deletes
+ * the previous on-disk originals/display/thumbs so storage stays clean.
+ */
+exports.replaceWallpaperImage = async (id, file) => {
+  assertUuid(id, 'wallpaper id');
+  if (!file || !file.buffer) throw fail('An image file is required', 400);
+
+  const existing = await prisma.wallpaper.findUnique({ where: { id } });
+  if (!existing) throw fail('Wallpaper not found', 404);
+
+  const oldFiles = uploadFilenamesFromUrls(
+    existing.image,
+    existing.originalUrl,
+    existing.thumbnailUrl,
+  );
+
+  const processed = await processImage(file.buffer, {
+    mimetype: file.mimetype,
+    originalname: file.originalname,
+  });
+
+  const width = processed.width;
+  const height = processed.height;
+  const resolution = width && height ? `${width}x${height}` : '';
+  const sizeMB = Math.round((processed.bytes / (1024 * 1024)) * 100) / 100;
+
+  let updated;
+  try {
+    updated = await prisma.wallpaper.update({
+      where: { id },
+      data: {
+        image: processed.image,
+        originalUrl: processed.original,
+        thumbnailUrl: processed.thumbnail,
+        width,
+        height,
+        resolution,
+        sizeMB,
+        preferredResolution:
+          preferredResolutionForSource(width, height) || resolution,
+        resolutions: resolutionKeysForSource(width, height),
+      },
+      include: { uploadedBy: UPLOADER_SELECT },
+    });
+  } catch (err) {
+    // Roll back the newly written files if the DB update fails.
+    await removeImages(processed.filenames);
+    if (err.code === 'P2025') throw fail('Wallpaper not found', 404);
+    throw err;
+  }
+
+  // Drop previous files after the new ones are committed.
+  // Never delete a filename that the new set still uses (shouldn't happen with UUIDs).
+  const newSet = new Set(processed.filenames);
+  await removeImages(oldFiles.filter((name) => !newSet.has(name)));
+
+  return {
+    message: 'Wallpaper image replaced',
+    data: { wallpaper: serializeAdminWallpaper(updated) },
+    statusCode: 200,
+  };
+};
+
+// DELETE /admin/wallpapers/:id (cascades favorites) + remove on-disk media
 exports.deleteWallpaper = async (id) => {
   assertUuid(id, 'wallpaper id');
+  const existing = await prisma.wallpaper.findUnique({ where: { id } });
+  if (!existing) throw fail('Wallpaper not found', 404);
+
+  const files = uploadFilenamesFromUrls(
+    existing.image,
+    existing.originalUrl,
+    existing.thumbnailUrl,
+  );
+
   try {
     await prisma.wallpaper.delete({ where: { id } });
   } catch (err) {
     if (err.code === 'P2025') throw fail('Wallpaper not found', 404);
     throw err;
   }
+  await removeImages(files);
   return { message: 'Wallpaper deleted', data: { id }, statusCode: 200 };
 };
 

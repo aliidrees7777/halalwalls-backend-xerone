@@ -1,11 +1,22 @@
 // Admin routes — CMS/dashboard surface for staff. Mounted at /api/v1/admin.
 // Every route requires an admin token via authorize(['admin']).
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const AdminController = require('../controllers/admin.controller');
 const authorize = require('../middleware/authorize');
 
 const admin = authorize(['admin']);
+
+const ALLOWED_MIME = ['image/jpeg', 'image/png'];
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_MIME.includes(file.mimetype)) return cb(null, true);
+    return cb(new Error('Only JPEG and PNG images are allowed'));
+  },
+});
 
 // ── Dashboard ──
 router.get('/overview', admin, AdminController.getOverview);
@@ -23,6 +34,12 @@ router.get('/wallpapers/stats', admin, AdminController.getWallpaperStats);
 router.get('/wallpapers/export', admin, AdminController.exportWallpapers);
 router.get('/wallpapers/:id', admin, AdminController.getWallpaper);
 router.patch('/wallpapers/:id', admin, AdminController.updateWallpaper);
+router.post(
+  '/wallpapers/:id/image',
+  admin,
+  upload.single('image'),
+  AdminController.replaceWallpaperImage,
+);
 router.delete('/wallpapers/:id', admin, AdminController.deleteWallpaper);
 router.patch('/wallpapers/:id/approve', admin, AdminController.approve);
 router.patch('/wallpapers/:id/reject', admin, AdminController.reject);
