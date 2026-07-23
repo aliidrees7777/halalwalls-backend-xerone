@@ -38,6 +38,16 @@ function startOfDay(d) {
   return x;
 }
 
+/** UTC midnight for a date — keep trend buckets aligned with Postgres date_trunc. */
+function startOfUtcDay(d) {
+  const x = new Date(d);
+  return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+}
+
+function utcDateString(d) {
+  return startOfUtcDay(d).toISOString().slice(0, 10);
+}
+
 // End-user scope (excludes admins + deactivated accounts).
 const USER_SCOPE = { role: 'user', isDeleted: false };
 
@@ -45,22 +55,22 @@ exports.getDashboard = async (options = {}) => {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  // ── resolve the trend range ──
+  // ── resolve the trend range (UTC calendar days — matches SQL date_trunc) ──
   const rangeKey = RANGES[options.range] ? options.range : DEFAULT_RANGE;
   const range = RANGES[rangeKey];
-  const today = startOfDay(now);
+  const today = startOfUtcDay(now);
   const trendStart =
     range.days === null
-      ? startOfDay(startOfMonth)
+      ? startOfUtcDay(startOfMonth)
       : (() => {
-          const s = startOfDay(now);
-          s.setDate(s.getDate() - (range.days - 1));
+          const s = startOfUtcDay(now);
+          s.setUTCDate(s.getUTCDate() - (range.days - 1));
           return s;
         })();
   // Number of day-buckets to render (inclusive of today).
   const dayCount =
     range.days === null
-      ? Math.round((today - startOfDay(startOfMonth)) / 86400000) + 1
+      ? Math.round((today - startOfUtcDay(startOfMonth)) / 86400000) + 1
       : range.days;
 
   const [
@@ -99,7 +109,8 @@ exports.getDashboard = async (options = {}) => {
       select: { firstName: true, lastName: true, email: true, isPremium: true, subscriptionPlan: true, createdAt: true },
     }),
     prisma.$queryRaw`
-      SELECT date_trunc('day', "createdAt") AS day, count(*)::int AS n
+      SELECT date_trunc('day', "createdAt" AT TIME ZONE 'UTC') AS day,
+             count(*)::int AS n
       FROM hw_download_events
       WHERE "createdAt" >= ${trendStart}
       GROUP BY day
@@ -129,15 +140,18 @@ exports.getDashboard = async (options = {}) => {
     plans.yearly * PLAN_PRICE.yearly +
     plans.lifetime * PLAN_PRICE.lifetime;
 
-  // ── downloads trend (per day, gap-filled to a continuous range) ──
+  // ── downloads trend (per day, gap-filled to a continuous UTC range) ──
   const byDay = new Map(
-    dailyDownloads.map((r) => [startOfDay(r.day).getTime(), Number(r.n)]),
+    dailyDownloads.map((r) => [startOfUtcDay(r.day).getTime(), Number(r.n)]),
   );
   const series = [];
   for (let i = 0; i < dayCount; i += 1) {
     const d = new Date(trendStart);
-    d.setDate(trendStart.getDate() + i);
-    series.push({ date: d.toISOString().slice(0, 10), value: byDay.get(startOfDay(d).getTime()) || 0 });
+    d.setUTCDate(trendStart.getUTCDate() + i);
+    series.push({
+      date: utcDateString(d),
+      value: byDay.get(startOfUtcDay(d).getTime()) || 0,
+    });
   }
   const rangeDownloads = series.reduce((sum, p) => sum + p.value, 0);
 
