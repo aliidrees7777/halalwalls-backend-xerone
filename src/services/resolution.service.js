@@ -3,7 +3,7 @@
 // admin functions power the Resolutions page. Usage is derived from
 // Wallpaper.resolution (wallpapers) + DownloadEvent.resolution (downloads).
 const prisma = require('../lib/prisma');
-const { parsePagination, buildMeta } = require('../helpers/pagination');
+const { parsePagination, buildMeta, ADMIN_MAX_LIMIT } = require('../helpers/pagination');
 
 const fail = (m, s) => { const e = new Error(m); e.statusCode = s; return e; };
 const DEVICES = ['desktop', 'mobile'];
@@ -76,7 +76,7 @@ exports.listPublic = async () => {
 
 // ── Admin: GET /admin/resolutions ── union list with usage.
 exports.listAdmin = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = parsePagination(query, { maxLimit: ADMIN_MAX_LIMIT });
   const [rows, u] = await Promise.all([prisma.resolution.findMany(), usage()]);
   let out = mapRows(rows, u.wpMap, u.dlMap);
   const q = String(query.q || '').trim().toLowerCase();

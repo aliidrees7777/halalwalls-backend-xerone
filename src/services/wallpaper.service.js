@@ -26,6 +26,7 @@ const {
   qualityLabelForDownload,
 } = require('../helpers/resolution-filter');
 const { hasPremiumAccess } = require('../helpers/premium-access');
+const { categoryWhere } = require('../helpers/category-resolve');
 
 // Short-lived signed token for a resolution download. Issued only after the
 // premium gate passes (trackDownload) and validated by the file endpoint — so
@@ -59,6 +60,12 @@ const fail = (message, statusCode) => {
 
 const slugifyTag = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+/** Safe download basename from the live title (falls back to URL slug). */
+function downloadBasename(doc) {
+  const fromTitle = slugifyTag(doc.title || '');
+  return fromTitle || doc.slug || 'wallpaper';
+}
 
 const formatDate = (d) => {
   try {
@@ -179,7 +186,7 @@ async function buildWhere(query, categorySlug, mode) {
   if (treatAsPremium) {
     where.isPremium = true;
   } else if (categorySlug) {
-    where.categorySlug = categorySlug;
+    Object.assign(where, categoryWhere(categorySlug));
   }
 
   if (mode === 'live') where.isLive = true;
@@ -225,10 +232,16 @@ async function buildWhere(query, categorySlug, mode) {
 
   const q = String(query.q || query.search || '').trim();
   if (q) {
-    where.OR = [
-      { title: { contains: q, mode: 'insensitive' } },
-      { categorySlug: { contains: q, mode: 'insensitive' } },
-      { category: { contains: q, mode: 'insensitive' } },
+    where.AND = [
+      ...(where.AND || []),
+      {
+        OR: [
+          { title: { contains: q, mode: 'insensitive' } },
+          { categorySlug: { contains: q, mode: 'insensitive' } },
+          { category: { contains: q, mode: 'insensitive' } },
+          { categories: { has: q } },
+        ],
+      },
     ];
   }
   return { where, q };
@@ -296,8 +309,23 @@ exports.getBySlug = async (slug, favSet = null) => {
 
   const doc = await prisma.wallpaper.findUnique({ where: { slug } });
 
+  const relatedSlugs = [
+    ...(doc.categorySlug ? [doc.categorySlug] : []),
+    ...(Array.isArray(doc.categorySlugs) ? doc.categorySlugs : []),
+  ];
   const related = await prisma.wallpaper.findMany({
-    where: { status: 'active', categorySlug: doc.categorySlug, id: { not: doc.id } },
+    where: {
+      status: 'active',
+      id: { not: doc.id },
+      ...(relatedSlugs.length
+        ? {
+            OR: [
+              { categorySlug: { in: relatedSlugs } },
+              ...relatedSlugs.map((s) => ({ categorySlugs: { has: s } })),
+            ],
+          }
+        : {}),
+    },
     take: 8,
   });
 
@@ -321,8 +349,24 @@ exports.related = async (slug, query = {}, favSet = null) => {
 
   const limit = Math.min(24, Math.max(1, parseInt(query.limit, 10) || 8));
 
+  const relatedSlugs = [
+    ...(base.categorySlug ? [base.categorySlug] : []),
+    ...(Array.isArray(base.categorySlugs) ? base.categorySlugs : []),
+  ];
+
   let docs = await prisma.wallpaper.findMany({
-    where: { status: 'active', categorySlug: base.categorySlug, id: { not: base.id } },
+    where: {
+      status: 'active',
+      id: { not: base.id },
+      ...(relatedSlugs.length
+        ? {
+            OR: [
+              { categorySlug: { in: relatedSlugs } },
+              ...relatedSlugs.map((s) => ({ categorySlugs: { has: s } })),
+            ],
+          }
+        : {}),
+    },
     orderBy: [{ downloadCount: 'desc' }, { createdAt: 'desc' }],
     take: limit,
   });
@@ -447,6 +491,7 @@ exports.getDownloadFile = async (slug, token) => {
   if (!doc) throw fail('Wallpaper not found', 404);
 
   const sourceUrl = doc.originalUrl || doc.image;
+  const base = downloadBasename(doc);
 
   // Original download: return the exact stored file (no re-encode) so the
   // "Download Original (X MB)" label matches the bytes the user receives.
@@ -455,7 +500,8 @@ exports.getDownloadFile = async (slug, token) => {
     const { contentType, ext } = sourceMimeAndExt(sourceUrl);
     return {
       buffer,
-      filename: `${slug}-original-halalwalls.${ext}`,
+      // Use live title so a rename is reflected in the saved filename.
+      filename: `${base}-original-halalwalls.${ext}`,
       contentType,
     };
   }
@@ -480,7 +526,7 @@ exports.getDownloadFile = async (slug, token) => {
 
   return {
     buffer,
-    filename: `${slug}-${quality}-halalwalls.jpg`,
+    filename: `${base}-${quality}-halalwalls.jpg`,
     contentType: 'image/jpeg',
   };
 };

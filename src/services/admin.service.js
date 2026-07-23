@@ -5,11 +5,13 @@
 //   • Q2.1/2.2 — wallpaper management (read + write)
 //   • Q2.3 — moderation queue (pending / approve / reject)
 const prisma = require('../lib/prisma');
-const { parsePagination, buildMeta } = require('../helpers/pagination');
+const { parsePagination, buildMeta, ADMIN_MAX_LIMIT } = require('../helpers/pagination');
+const adminPage = (query) => parsePagination(query, { maxLimit: ADMIN_MAX_LIMIT });
 const {
   resolutionKeysForSource,
   preferredResolutionForSource,
 } = require('../helpers/resolution-filter');
+const { resolveCategories, categoryWhere } = require('../helpers/category-resolve');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
@@ -67,6 +69,16 @@ const serializeAdminWallpaper = (w) => ({
   description: w.description,
   category: w.category,
   categorySlug: w.categorySlug,
+  categories: Array.isArray(w.categories) && w.categories.length
+    ? w.categories
+    : w.category
+      ? [w.category]
+      : [],
+  categorySlugs: Array.isArray(w.categorySlugs) && w.categorySlugs.length
+    ? w.categorySlugs
+    : w.categorySlug
+      ? [w.categorySlug]
+      : [],
   tags: w.tags,
   image: w.image,
   originalUrl: w.originalUrl,
@@ -105,8 +117,8 @@ const serializeAdminUser = (u) => ({
   role: u.role,
   authProvider: u.authProvider,
   emailVerified: u.emailVerified,
-  isPremium: u.isPremium,
-  subscriptionPlan: u.subscriptionPlan || null,
+  isPremium: u.role === 'admin' ? true : !!u.isPremium,
+  subscriptionPlan: u.role === 'admin' ? (u.subscriptionPlan || 'lifetime') : u.subscriptionPlan || null,
   isDeleted: !!u.isDeleted,
   status: u.isDeleted ? 'deactivated' : 'active',
   avatar: u.avatar,
@@ -218,7 +230,7 @@ exports.getOverview = async () => {
 
 // GET /admin/wallpapers — list ALL statuses (search / filter / sort / paginate)
 exports.listWallpapers = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
 
   const where = {};
   if (query.status) {
@@ -227,7 +239,7 @@ exports.listWallpapers = async (query = {}) => {
     }
     where.status = query.status;
   }
-  if (query.category) where.categorySlug = slugify(query.category);
+  if (query.category) Object.assign(where, categoryWhere(query.category));
   if (query.resolution) where.resolution = String(query.resolution).trim();
   const prem = toBool(query.isPremium);
   if (prem !== undefined) where.isPremium = prem;
@@ -236,14 +248,17 @@ exports.listWallpapers = async (query = {}) => {
 
   const q = String(query.q || '').trim();
   if (q) {
-    where.OR = [
+    const searchOr = [
       { uploadedBy: { is: { email: { contains: q, mode: 'insensitive' } } } },
       { uploadedBy: { is: { firstName: { contains: q, mode: 'insensitive' } } } },
       { title: { contains: q, mode: 'insensitive' } },
       { categorySlug: { contains: q, mode: 'insensitive' } },
       { category: { contains: q, mode: 'insensitive' } },
+      { categories: { has: q } },
+      { categorySlugs: { has: slugify(q) } },
       { tags: { has: q } },
     ];
+    where.AND = [...(where.AND || []), { OR: searchOr }];
   }
 
   const orderBy = WALLPAPER_SORTS[query.sort] || WALLPAPER_SORTS.latest;
@@ -319,15 +334,21 @@ exports.getWallpaperStats = async () => {
 exports.exportWallpapersCsv = async (query = {}) => {
   const where = {};
   if (query.status && WALLPAPER_STATUSES.includes(query.status)) where.status = query.status;
-  if (query.category) where.categorySlug = slugify(query.category);
+  if (query.category) Object.assign(where, categoryWhere(query.category));
   if (query.resolution) where.resolution = String(query.resolution).trim();
   const q = String(query.q || '').trim();
   if (q) {
-    where.OR = [
-      { title: { contains: q, mode: 'insensitive' } },
-      { category: { contains: q, mode: 'insensitive' } },
-      { tags: { has: q } },
-      { uploadedBy: { is: { email: { contains: q, mode: 'insensitive' } } } },
+    where.AND = [
+      ...(where.AND || []),
+      {
+        OR: [
+          { title: { contains: q, mode: 'insensitive' } },
+          { category: { contains: q, mode: 'insensitive' } },
+          { categories: { has: q } },
+          { tags: { has: q } },
+          { uploadedBy: { is: { email: { contains: q, mode: 'insensitive' } } } },
+        ],
+      },
     ];
   }
 
@@ -363,23 +384,30 @@ exports.exportWallpapersCsv = async (query = {}) => {
 
 // ───────────────────────── Category management ─────────────────────────
 // Per-category live wallpaper count + download total (active wallpapers only).
+// Counts a wallpaper under every category it belongs to (primary + multi).
 async function categoryUsage() {
-  const groups = await prisma.wallpaper.groupBy({
-    by: ['categorySlug'],
+  const walls = await prisma.wallpaper.findMany({
     where: { status: 'active' },
-    _count: { _all: true },
-    _sum: { downloadCount: true },
+    select: { categorySlug: true, categorySlugs: true, downloadCount: true },
   });
   const bySlug = {};
-  groups.forEach((g) => {
-    if (g.categorySlug) bySlug[g.categorySlug] = { count: g._count._all, downloads: g._sum.downloadCount || 0 };
-  });
+  for (const w of walls) {
+    const slugs = new Set([
+      ...(w.categorySlug ? [w.categorySlug] : []),
+      ...(Array.isArray(w.categorySlugs) ? w.categorySlugs : []),
+    ]);
+    for (const slug of slugs) {
+      if (!bySlug[slug]) bySlug[slug] = { count: 0, downloads: 0 };
+      bySlug[slug].count += 1;
+      bySlug[slug].downloads += w.downloadCount || 0;
+    }
+  }
   return bySlug;
 }
 
 // GET /admin/categories — categories with counts/downloads/status (search/sort/paginate).
 exports.listCategoriesAdmin = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
   const [cats, usage] = await Promise.all([
     prisma.category.findMany({ orderBy: [{ order: 'asc' }, { name: 'asc' }] }),
     categoryUsage(),
@@ -472,12 +500,7 @@ exports.createWallpaper = async (body = {}, adminId = null) => {
 
   const slug = await uniqueSlug(slugify(body.slug || title));
 
-  const categorySlug = body.categorySlug ? slugify(body.categorySlug) : null;
-  let categoryLabel = body.category ? String(body.category).trim() : null;
-  if (!categoryLabel && categorySlug) {
-    const cat = await prisma.category.findUnique({ where: { slug: categorySlug } });
-    if (cat) categoryLabel = cat.name;
-  }
+  const cats = await resolveCategories(body);
 
   const width = Number.isFinite(+body.width) ? +body.width : null;
   const height = Number.isFinite(+body.height) ? +body.height : null;
@@ -503,8 +526,10 @@ exports.createWallpaper = async (body = {}, adminId = null) => {
       title,
       slug,
       description: body.description ? String(body.description).trim() : '',
-      category: categoryLabel,
-      categorySlug,
+      category: cats.category,
+      categorySlug: cats.categorySlug,
+      categories: cats.categories,
+      categorySlugs: cats.categorySlugs,
       tags: Array.isArray(body.tags) ? body.tags : [],
       image,
       originalUrl: body.originalUrl ? String(body.originalUrl).trim() : image,
@@ -532,10 +557,22 @@ exports.updateWallpaper = async (id, body = {}) => {
   assertUuid(id, 'wallpaper id');
 
   const data = {};
-  ['title', 'description', 'category', 'image', 'originalUrl', 'thumbnailUrl', 'resolution', 'preferredResolution', 'author'].forEach((k) => {
+  ['title', 'description', 'image', 'originalUrl', 'thumbnailUrl', 'resolution', 'preferredResolution', 'author'].forEach((k) => {
     if (body[k] !== undefined) data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
   });
-  if (body.categorySlug !== undefined) data.categorySlug = body.categorySlug ? slugify(body.categorySlug) : null;
+  // Multi-category: accept categorySlugs / categories arrays (or legacy single fields).
+  if (
+    body.categorySlugs !== undefined ||
+    body.categories !== undefined ||
+    body.categorySlug !== undefined ||
+    body.category !== undefined
+  ) {
+    const cats = await resolveCategories(body);
+    data.category = cats.category;
+    data.categorySlug = cats.categorySlug;
+    data.categories = cats.categories;
+    data.categorySlugs = cats.categorySlugs;
+  }
   if (body.tags !== undefined) data.tags = Array.isArray(body.tags) ? body.tags : [];
   if (body.resolutions !== undefined) data.resolutions = Array.isArray(body.resolutions) ? body.resolutions : [];
   if (body.sizeMB !== undefined) data.sizeMB = Number.isFinite(+body.sizeMB) ? +body.sizeMB : 0;
@@ -607,7 +644,7 @@ exports.deleteWallpaper = async (id) => {
 
 // GET /admin/wallpapers/pending — user submissions awaiting review (FIFO)
 exports.listPending = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
   const where = { status: 'pending' };
   const [rows, total] = await Promise.all([
     prisma.wallpaper.findMany({ where, orderBy: { createdAt: 'asc' }, skip, take: limit, include: { uploadedBy: UPLOADER_SELECT } }),
@@ -659,7 +696,7 @@ const serializeSubscriber = (u) => ({
 
 // GET /admin/subscribers — premium members (search / plan filter / sort / paginate).
 exports.listSubscribers = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
   const where = { ...SUB_SCOPE };
   if (query.plan && SUB_PLANS.includes(query.plan)) where.subscriptionPlan = query.plan;
   const q = String(query.q || '').trim();
@@ -761,7 +798,7 @@ function unionTags(tags, usage) {
 
 // GET /admin/tags — union list with usage (search / status filter / sort / paginate).
 exports.listTagsAdmin = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
   const [tags, usage] = await Promise.all([prisma.tag.findMany(), tagUsage()]);
   let rows = unionTags(tags, usage);
 
@@ -859,7 +896,7 @@ exports.deleteTag = async (slug) => {
 
 // GET /admin/users — search / filter / paginate (with favorites + uploads counts)
 exports.listUsers = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
 
   const where = {};
   if (query.role) {
@@ -945,7 +982,10 @@ exports.createUser = async (body = {}) => {
       email,
       password: await bcrypt.hash(password, 10),
       role,
-      isPremium: !!body.isPremium,
+      // Admins are always premium members on the public site.
+      isPremium: role === 'admin' ? true : !!body.isPremium,
+      subscriptionPlan: role === 'admin' ? 'lifetime' : null,
+      subscriptionStatus: role === 'admin' ? 'active' : null,
       emailVerified: body.emailVerified === undefined ? true : !!body.emailVerified,
       authProvider: 'local',
     },
@@ -996,6 +1036,19 @@ exports.updateUser = async (id, body = {}) => {
     throw fail('No valid fields to update', 400);
   }
 
+  // Resolve final role so admins can never lose public-site premium.
+  const existing = await prisma.user.findUnique({
+    where: { id },
+    select: { role: true },
+  });
+  if (!existing) throw fail('User not found', 404);
+  const finalRole = data.role || existing.role;
+  if (finalRole === 'admin') {
+    data.isPremium = true;
+    data.subscriptionPlan = 'lifetime';
+    data.subscriptionStatus = 'active';
+  }
+
   let user;
   try {
     user = await prisma.user.update({ where: { id }, data, include: USER_COUNTS });
@@ -1028,7 +1081,7 @@ exports.deleteUser = async (id, requestingAdminId) => {
 
 // GET /admin/favorites — most-favorited wallpapers (ranked by the join table)
 exports.getFavoritesAnalytics = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
 
   const groups = await prisma.favorite.groupBy({
     by: ['wallpaperId'],
@@ -1069,7 +1122,7 @@ exports.getFavoritesAnalytics = async (query = {}) => {
 
 // GET /admin/contacts — list inbound messages (filter + paginate)
 exports.listContacts = async (query = {}) => {
-  const { page, limit, skip } = parsePagination(query);
+  const { page, limit, skip } = adminPage(query);
 
   const where = {};
   if (query.status) {

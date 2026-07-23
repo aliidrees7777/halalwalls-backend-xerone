@@ -8,6 +8,7 @@ const { processImage, removeImages } = require('../helpers/image-pipeline');
 const { serializeCard } = require('./wallpaper.service');
 const { resolutionKeysForSource, preferredResolutionForSource } = require('../helpers/resolution-filter');
 const { parseSourceUrl } = require('../helpers/source-url');
+const { resolveCategories } = require('../helpers/category-resolve');
 
 const slugify = (s) =>
   String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -60,26 +61,15 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
   const thumbUrl = processed.thumbnail;
 
   try {
-    // 2. Resolve category — accept a slug or a display label; fill the missing
-    //    half from the categories table when possible (mirrors admin create).
-    const rawCategory = body.category ? String(body.category).trim() : '';
-    const categorySlug = body.categorySlug
-      ? slugify(body.categorySlug)
-      : rawCategory
-        ? slugify(rawCategory)
-        : null;
-    let categoryLabel = rawCategory || null;
-    if (!categoryLabel && categorySlug) {
-      const cat = await prisma.category.findUnique({ where: { slug: categorySlug } });
-      if (cat) categoryLabel = cat.name;
-    }
+    // 2. Resolve one or more categories (admin may send categorySlugs[]).
+    const cats = await resolveCategories(body);
 
     // 3. Title: explicit → uploaded filename (sans extension) → category label.
     const fileBase = file.originalname
       ? String(file.originalname).replace(/\.[^.]+$/, '').trim()
       : '';
     const title =
-      (body.title && String(body.title).trim()) || fileBase || categoryLabel || 'Untitled wallpaper';
+      (body.title && String(body.title).trim()) || fileBase || cats.category || 'Untitled wallpaper';
 
     // 4. Dimensions + sizeMB come from the ORIGINAL upload (not the display WebP),
     //    so "Download Original" matches the file the user uploaded (e.g. 10K / 10MB).
@@ -114,8 +104,10 @@ exports.createUpload = async (userId, file, body = {}, origin = '', options = {}
         title,
         slug,
         description,
-        category: categoryLabel,
-        categorySlug,
+        category: cats.category,
+        categorySlug: cats.categorySlug,
+        categories: cats.categories,
+        categorySlugs: cats.categorySlugs,
         tags: parseTags(body.tags),
         // Browse/grid uses the optimized WebP; Original download uses originalUrl.
         image: imageUrl,

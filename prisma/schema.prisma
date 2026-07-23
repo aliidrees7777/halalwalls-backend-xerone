@@ -91,8 +91,12 @@ model Wallpaper {
   title               String
   slug                String          @unique
   description         String          @default("")
-  category            String? // display label (e.g. "Anime")
-  categorySlug        String? // filter slug (e.g. "anime")
+  category            String? // primary display label (e.g. "Anime")
+  categorySlug        String? // primary filter slug (e.g. "anime")
+  /// Additional + primary labels (multi-category). Primary is also categories[0].
+  categories          String[]        @default([])
+  /// Additional + primary slugs (multi-category). Primary is also categorySlugs[0].
+  categorySlugs       String[]        @default([])
   tags                String[]        @default([])
   image               String?
   originalUrl         String?

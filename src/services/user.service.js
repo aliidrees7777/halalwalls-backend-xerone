@@ -11,6 +11,7 @@
 const prisma = require('../lib/prisma');
 const stripe = require('../lib/stripe');
 const { serializeUser } = require('../helpers/serialize');
+const { ensureAdminPremium } = require('../helpers/premium-access');
 const { serializeCard } = require('./wallpaper.service');
 
 const fail = (message, statusCode) => {
@@ -133,11 +134,18 @@ exports.removeFavorite = async (userId, wallpaperId) => {
 
 // ── GET /me — profile + favorites/uploads counts ─────────────────────────
 exports.getMe = async (userId) => {
-  const user = await prisma.user.findUnique({
+  let user = await prisma.user.findUnique({
     where: { id: userId },
     include: { favorites: { select: { wallpaperId: true } } },
   });
   if (!user) throw fail('User not found', 404);
+
+  // Admins always stay premium on the public site (heal DB if flag was cleared).
+  await ensureAdminPremium(prisma, user);
+  user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { favorites: { select: { wallpaperId: true } } },
+  });
 
   const uploadsCount = await prisma.wallpaper.count({ where: { uploadedById: userId } });
   return {

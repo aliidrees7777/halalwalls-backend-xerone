@@ -8,6 +8,7 @@ const { serializeUser } = require('../helpers/serialize');
 const { signAccessToken } = require('../helpers/jwt.helper');
 const { verifyGoogleIdToken } = require('../helpers/google.helper');
 const { sendPasswordResetEmail, sendVerificationEmail } = require('../helpers/email.helper');
+const { ensureAdminPremium } = require('../helpers/premium-access');
 
 const SALT_ROUNDS = 10;
 
@@ -147,10 +148,17 @@ exports.login = async ({ email, password, role }) => {
     throw fail(`This account is not a ${role} account`, 403);
   }
 
-  const token = signAccessToken(user);
+  // Keep admin accounts permanently premium (password changes / edits can't strip it).
+  const account = await ensureAdminPremium(prisma, user);
+  const withFavs =
+    account.id === user.id && account.isPremium === user.isPremium
+      ? user
+      : await prisma.user.findUnique({ where: { id: user.id }, include: WITH_FAVORITES });
+
+  const token = signAccessToken(withFavs);
   return {
     message: 'Logged in successfully',
-    data: { token, user: serializeUser(user) },
+    data: { token, user: serializeUser(withFavs) },
     statusCode: 200,
   };
 };
@@ -298,6 +306,14 @@ exports.changePassword = async (userId, { currentPassword, newPassword }) => {
     data: {
       password: await bcrypt.hash(newPassword, SALT_ROUNDS),
       sessionsValidFrom: new Date(), // invalidate other devices
+      // Password changes must not drop admin premium entitlements.
+      ...(user.role === 'admin'
+        ? {
+            isPremium: true,
+            subscriptionPlan: 'lifetime',
+            subscriptionStatus: 'active',
+          }
+        : {}),
     },
   });
 

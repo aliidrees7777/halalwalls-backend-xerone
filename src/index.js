@@ -25,7 +25,7 @@ const corsOptions = {
   credentials: true,
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
   allowedHeaders: 'Content-Type,Authorization,x-vendor-id,x-api-key',
-  exposedHeaders: 'Content-Length',
+  exposedHeaders: 'Content-Length,Content-Disposition',
   optionsSuccessStatus: 204,
   maxAge: 86400,
 };
