@@ -44,7 +44,10 @@ function serializeUser(user, favoriteIds) {
       user.role === 'admin'
         ? user.subscriptionPlan || 'lifetime'
         : user.subscriptionPlan || null,
-    subscriptionStatus: user.subscriptionStatus || null,
+    subscriptionStatus:
+      user.role === 'admin'
+        ? user.subscriptionStatus || 'active'
+        : user.subscriptionStatus || null,
     favorites: ids,
     favoritesCount: ids.length,
     createdAt: user.createdAt,

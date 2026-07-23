@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const WallpaperController = require('../controllers/wallpaper.controller');
+const optionalAuth = require('../middleware/optionalAuth');
 
 // Catalog with filters & pagination.
 // Supports ?q= &category= &filter= &tag= &sort=(latest|popular|random|live) &page= &limit=
@@ -20,7 +21,8 @@ router.get('/:slug/related', WallpaperController.related);
 // Render + serve the download file. Public but token-gated (?dl= from POST /download).
 router.get('/:slug/file', WallpaperController.downloadFile);
 
-// Guests may download free wallpapers; premium gate is enforced in the service.
-router.post('/:slug/download', WallpaperController.trackDownload);
+// Guests may download free wallpapers. Bearer token is read (optional) so
+// premium / admin accounts pass the service-level premium gate.
+router.post('/:slug/download', optionalAuth(), WallpaperController.trackDownload);
 
 module.exports = router;
