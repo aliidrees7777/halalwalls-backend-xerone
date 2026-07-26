@@ -3,6 +3,7 @@
 // LIVE count of active wallpapers per category; create/update/delete are
 // operator (admin) actions so the upload form has real categories to pick from.
 const prisma = require('../lib/prisma');
+const { categoryWhere } = require('../helpers/category-resolve');
 
 const fail = (message, statusCode) => {
   const error = new Error(message);
@@ -28,15 +29,29 @@ const serialize = (c, count) => ({
 // Map of categorySlug -> active wallpaper count.
 // Premium / premium-walls categories count wallpapers flagged isPremium
 // (they can live under any thematic categorySlug).
+// Thematic categories count primary OR multi-category membership (categorySlugs),
+// matching the public wallpaper list filter.
 const PREMIUM_SLUGS = new Set(['premium', 'premium-walls', 'premiumwalls']);
 
 const liveCounts = async () => {
-  const [rows, premiumCount, premiumCats] = await Promise.all([
-    prisma.wallpaper.groupBy({
-      by: ['categorySlug'],
-      where: { status: 'active' },
-      _count: { _all: true },
-    }),
+  const [membershipRows, premiumCount, premiumCats] = await Promise.all([
+    // Unnest multi-category arrays; fall back to primary categorySlug when empty.
+    prisma.$queryRaw`
+      SELECT s AS slug, COUNT(*)::int AS n
+      FROM hw_wallpapers w,
+      LATERAL unnest(
+        CASE
+          WHEN coalesce(cardinality(w."categorySlugs"), 0) > 0 THEN w."categorySlugs"
+          WHEN w."categorySlug" IS NOT NULL AND w."categorySlug" <> ''
+            THEN ARRAY[w."categorySlug"]
+          ELSE ARRAY[]::text[]
+        END
+      ) AS s
+      WHERE w.status = 'active'
+        AND s IS NOT NULL
+        AND s <> ''
+      GROUP BY s
+    `,
     prisma.wallpaper.count({ where: { status: 'active', isPremium: true } }),
     prisma.category.findMany({
       where: { isPremium: true },
@@ -46,11 +61,11 @@ const liveCounts = async () => {
 
   /** @type {Record<string, number>} */
   const map = {};
-  for (const r of rows) {
-    if (r.categorySlug) map[r.categorySlug] = r._count._all;
+  for (const r of membershipRows) {
+    if (r.slug) map[r.slug] = Number(r.n) || 0;
   }
 
-  // Apply AFTER groupBy so slug membership never overwrites the isPremium total.
+  // Apply AFTER membership counts so slug rows never overwrite isPremium total.
   for (const slug of PREMIUM_SLUGS) {
     map[slug] = premiumCount;
   }
@@ -81,7 +96,7 @@ exports.getBySlug = async (slug) => {
   const count =
     cat.isPremium || PREMIUM_SLUGS.has(slug)
       ? await prisma.wallpaper.count({ where: { status: 'active', isPremium: true } })
-      : await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
+      : await prisma.wallpaper.count({ where: { status: 'active', ...categoryWhere(slug) } });
   return { message: 'Category fetched', data: { category: serialize(cat, count) }, statusCode: 200 };
 };
 
@@ -133,7 +148,7 @@ exports.update = async (slug, body = {}) => {
   const count =
     cat.isPremium || PREMIUM_SLUGS.has(slug)
       ? await prisma.wallpaper.count({ where: { status: 'active', isPremium: true } })
-      : await prisma.wallpaper.count({ where: { status: 'active', categorySlug: slug } });
+      : await prisma.wallpaper.count({ where: { status: 'active', ...categoryWhere(slug) } });
   return { message: 'Category updated', data: { category: serialize(cat, count) }, statusCode: 200 };
 };
 
