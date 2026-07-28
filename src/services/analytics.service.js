@@ -17,7 +17,14 @@
 const fs = require('fs');
 const path = require('path');
 const prisma = require('../lib/prisma');
-const { buildMeta } = require('../helpers/pagination');
+const { parsePagination, buildMeta } = require('../helpers/pagination');
+
+/** Always emit ISO-8601 so the admin UI can format local dates reliably. */
+function isoAt(value) {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
 
 // Same monthly/yearly/lifetime prices the app charges — used to estimate revenue
 // from the premium-plan mix (no payments table in the schema).
@@ -162,7 +169,7 @@ exports.getDashboard = async (options = {}) => {
       type: w.status === 'active' ? 'wallpaper_approved' : 'wallpaper_uploaded',
       title: w.status === 'active' ? 'Wallpaper approved' : 'New wallpaper uploaded',
       subtitle: w.title,
-      at: w.createdAt,
+      at: isoAt(w.createdAt),
     });
   });
   recentUsers.forEach((u) => {
@@ -171,14 +178,14 @@ exports.getDashboard = async (options = {}) => {
         type: 'subscription',
         title: 'New subscription',
         subtitle: `${u.subscriptionPlan || 'premium'} — ${u.email}`,
-        at: u.createdAt,
+        at: isoAt(u.createdAt),
       });
     } else {
       activity.push({
         type: 'user',
         title: 'New user registered',
         subtitle: u.email,
-        at: u.createdAt,
+        at: isoAt(u.createdAt),
       });
     }
   });
@@ -229,10 +236,14 @@ exports.getDashboard = async (options = {}) => {
 // recent wallpapers (uploads/approvals) + user registrations/subscriptions,
 // newest first. POOL bounds how far back the feed reaches.
 const ACTIVITY_POOL = 100;
+const ACTIVITY_MAX_LIMIT = ACTIVITY_POOL * 2;
 
 exports.getActivity = async (options = {}) => {
-  const page = Math.max(1, parseInt(options.page, 10) || 1);
-  const limit = Math.min(50, Math.max(1, parseInt(options.limit, 10) || 15));
+  // Supports limit=all (See all) the same way other admin list endpoints do.
+  const { page, limit, skip } = parsePagination(options, {
+    defaultLimit: 15,
+    maxLimit: ACTIVITY_MAX_LIMIT,
+  });
 
   const [wallpapers, users] = await Promise.all([
     prisma.wallpaper.findMany({
@@ -255,7 +266,7 @@ exports.getActivity = async (options = {}) => {
       title: w.status === 'active' ? 'Wallpaper approved' : 'New wallpaper uploaded',
       subtitle: w.title,
       slug: w.slug,
-      at: w.createdAt,
+      at: isoAt(w.createdAt),
     });
   });
   users.forEach((u) => {
@@ -264,17 +275,21 @@ exports.getActivity = async (options = {}) => {
         type: 'subscription',
         title: 'New subscription',
         subtitle: `${u.subscriptionPlan || 'premium'} — ${u.email}`,
-        at: u.createdAt,
+        at: isoAt(u.createdAt),
       });
     } else {
-      activity.push({ type: 'user', title: 'New user registered', subtitle: u.email, at: u.createdAt });
+      activity.push({
+        type: 'user',
+        title: 'New user registered',
+        subtitle: u.email,
+        at: isoAt(u.createdAt),
+      });
     }
   });
-  activity.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  activity.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime());
 
   const total = activity.length;
-  const start = (page - 1) * limit;
-  const items = activity.slice(start, start + limit);
+  const items = activity.slice(skip, skip + limit);
 
   return {
     message: 'Activity feed',
